@@ -8,7 +8,9 @@ from src.parsers.smart_a import SmartALoader
 from src.rules.aggregator import aggregate_journals, sum_related_party_revenue
 from src.rules.depreciation import calc_depreciation_all
 from src.rules.entertainment import calc_entertainment
-from src.rules.donation import calc_donation
+from src.rules.donation import (
+    calc_donation, eligible_donation_carryforward, roll_forward,
+)
 from src.rules.allowances import (
     calc_bad_debt_allowance, calc_retirement_allowance, calc_pension_deduction,
 )
@@ -990,13 +992,24 @@ def render(proj) -> None:
                 ]
                 _don_special, _don_general = mi.donation_special, mi.donation_general
                 _don_nondes = mi.donation_nondesignated
-                if (_don_special + _don_general + _don_nondes) > 0:
+                # 전기 이월 기부금 (법§24⑤, 10년 내, 발생연도순) — 우선공제 대상
+                _cf_special = eligible_donation_carryforward(
+                    mi.donation_carryforwards, fy_end_val.year, "특례")
+                _cf_general = eligible_donation_carryforward(
+                    mi.donation_carryforwards, fy_end_val.year, "일반")
+                _prior_special = sum(x["amount"] for x in _cf_special)
+                _prior_general = sum(x["amount"] for x in _cf_general)
+                _donation_next_cf: list[dict] = []
+                if (_don_special + _don_general + _don_nondes
+                        + _prior_special + _prior_general) > 0:
                     # 기준소득금액 = 차가감소득금액 + 특례 + 일반기부금 (비지정 제외)
                     #   차가감소득금액 = 당기순이익 + (기부금 외 가산조정) − 차감조정
                     # ── 순서 의존성: 기부금은 다른 모든 조정 후에 계산해야 한다.
-                    #    이 시점 donation_excess=0 이어야 total_add_back이 기부금 제외분이 됨.
+                    #    이 시점 donation_excess·donation_carryforward_deduction=0 이어야
+                    #    total_add_back/deduct이 기부금 제외분이 된다.
                     #    신규 가산/차감조정을 이 블록 '뒤'에 추가하면 base에서 누락되므로 금지.
                     assert result.donation_excess == 0, "기부금은 다른 조정 후 마지막에 계산"
+                    assert result.donation_carryforward_deduction == 0
                     _base_income = max(
                         0,
                         _net_income_input + result.total_add_back - result.total_deduct
@@ -1014,23 +1027,51 @@ def render(proj) -> None:
                         nondesignated_donation=_don_nondes,
                         adjusted_income=_base_income,
                         carryforward_loss_deduction=_cf_loss_ded,
+                        prior_special_carryforward=_prior_special,
+                        prior_general_carryforward=_prior_general,
                     )
                     result.donation_excess = _don.total_disallowed
-                    _add_detail("기부금 한도초과·비지정", _don.total_disallowed, "법§24",
-                                [f"기준소득금액 = 차가감소득금액 + 특례·일반기부금 = {_base_income:,}원 "
-                                 f"(당기순이익 {_net_income_input:,} + 가산조정 {result.total_add_back:,} "
-                                 f"− 차감조정 {result.total_deduct:,} + 기부금 {_don_special + _don_general:,})",
-                                 f"이월결손금 공제 {_cf_loss_ded:,}원 차감 → 한도기준 {max(0, _base_income - _cf_loss_ded):,}원",
-                                 f"특례기부금 {_don_special:,}원 (한도 50% = {_don.special_limit:,}원) · "
-                                 f"일반기부금 {_don_general:,}원 (한도 10% = {_don.general_limit:,}원)",
-                                 f"비지정기부금 {_don_nondes:,}원 → 전액 손금불산입",
-                                 "근거: 3단계 수기 입력의 기부금 분류 (법§24②2호·③2호)"],
-                                reason="기부금 한도는 다른 모든 세무조정 후 차가감소득금액에 특례·일반기부금을 "
-                                       "가산한 기준소득금액에서 이월결손금을 차감해 계산 — 분류별 한도초과분 + 비지정 전액",
-                                book=_don_special + _don_general + _don_nondes,
-                                tax=(_don_special + _don_general + _don_nondes) - _don.total_disallowed,
-                                tax_basis=f"특례기부금 한도 {_don.special_limit:,}원(50%) + 일반기부금 한도 {_don.general_limit:,}원(10%), 비지정은 전액부인 (법§24)",
-                                disposition="기타사외유출")
+                    result.donation_carryforward_deduction = _don.carryforward_deduction
+                    # 차기 이월액 (미공제 이월분 선발생분부터 소진 + 당기 한도초과) — .taxproj 승계
+                    _donation_next_cf = (
+                        roll_forward(_cf_special, _don.special_carryover_used,
+                                     _don.special_excess, fy_end_val.year, "특례")
+                        + roll_forward(_cf_general, _don.general_carryover_used,
+                                       _don.general_excess, fy_end_val.year, "일반")
+                    )
+                    if _don.total_disallowed:
+                        _add_detail("기부금 한도초과·비지정", _don.total_disallowed, "법§24",
+                                    [f"기준소득금액 = 차가감소득금액 + 특례·일반기부금 = {_base_income:,}원 "
+                                     f"(당기순이익 {_net_income_input:,} + 가산조정 {result.total_add_back:,} "
+                                     f"− 차감조정 {result.total_deduct:,} + 기부금 {_don_special + _don_general:,})",
+                                     f"이월결손금 공제 {_cf_loss_ded:,}원 차감 → 한도기준 {max(0, _base_income - _cf_loss_ded):,}원",
+                                     f"특례기부금 {_don_special:,}원 (한도 50% = {_don.special_limit:,}원, "
+                                     f"이월 우선공제 {_don.special_carryover_used:,}원 후 당기 한도초과 {_don.special_excess:,}원) · "
+                                     f"일반기부금 {_don_general:,}원 (한도 10% = {_don.general_limit:,}원, "
+                                     f"이월 우선공제 {_don.general_carryover_used:,}원 후 당기 한도초과 {_don.general_excess:,}원)",
+                                     f"비지정기부금 {_don_nondes:,}원 → 전액 손금불산입",
+                                     "근거: 3단계 수기 입력의 기부금 분류 (법§24②2호·③2호·⑥)"],
+                                    reason="기부금 한도는 다른 모든 세무조정 후 차가감소득금액에 특례·일반기부금을 "
+                                           "가산한 기준소득금액에서 이월결손금을 차감해 계산. 법§24⑥ 이월분 우선공제 후 "
+                                           "당기분 한도초과분 + 비지정 전액 = 손금불산입",
+                                    book=_don_special + _don_general + _don_nondes,
+                                    tax=(_don_special + _don_general + _don_nondes) - _don.total_disallowed,
+                                    tax_basis=f"특례 한도 {_don.special_limit:,}원(50%) + 일반 한도 {_don.general_limit:,}원(10%), 비지정 전액부인 (법§24)",
+                                    disposition="기타사외유출")
+                    if _don.carryforward_deduction:
+                        _add_detail(
+                            "기부금 이월액 당기 손금산입", _don.carryforward_deduction, "법§24⑤⑥",
+                            [f"전기 이월 기부금(특례 {_prior_special:,}원 · 일반 {_prior_general:,}원) 중 "
+                             f"당기 한도 내 우선공제 (법§24⑥)",
+                             f"특례 이월 공제 {_don.special_carryover_used:,}원 (한도 {_don.special_limit:,}원) · "
+                             f"일반 이월 공제 {_don.general_carryover_used:,}원 (한도 {_don.general_limit:,}원)",
+                             f"미공제 이월 잔액 → 차기 이월: 특례 {_don.special_carryover_remaining:,}원 · "
+                             f"일반 {_don.general_carryover_remaining:,}원 (공제기한 10년 내, 법§24⑤)",
+                             "근거: 3단계 수기 입력의 전기 이월 기부금(발생연도별)"],
+                            reason="전기 한도초과로 이월된 기부금을 당기 한도 내에서 당기 지출분보다 먼저 손금산입 (법§24⑥)",
+                            book=0, tax=-_don.carryforward_deduction,
+                            tax_basis="이월 기부금 당기 공제 = 손금산입(차감조정, 처분 기타) (법§24⑤⑥)",
+                            disposition="기타")
 
                 st.session_state.calc_details = calc_details
                 st.session_state.tax_result = result
@@ -1098,6 +1139,8 @@ def render(proj) -> None:
                 "total_deduct": result.total_deduct,
                 "depreciation_denial_end": sum(d.denial_end for d in _depr_list),
                 "reserves": _new_reserves,   # 차기 '전기 유보' 승계 후보 (당기 발생분)
+                # 차기 이월 기부금 (미공제 이월분 + 당기 한도초과, 발생연도별 — 법§24⑤)
+                "donation_carryforwards": _donation_next_cf,
             }
             st.success("계산 완료 — 결과가 프로젝트에 저장되어 6단계 .taxproj로 내보내면 내년에 승계됩니다")
 
@@ -1110,6 +1153,13 @@ def render(proj) -> None:
         m2.metric("각사업연도소득",   f"{r.business_income:,.0f}원")
         m3.metric("과세표준",         f"{r.tax_base:,.0f}원")
         m4.metric("차감납부세액",     f"{r.final_tax_due:,.0f}원")
+        _ntx = int(proj.manual_input.non_taxable_income or 0)
+        _idd = int(proj.manual_input.income_deduction or 0)
+        if _ntx or _idd:
+            st.caption(
+                f"※ 과세표준 산정 시 비과세소득 {_ntx:,}원·소득공제 {_idd:,}원 차감 "
+                "(법§13①2호·3호 — 과세표준및세액조정계산서 105·106란). 당기 미공제분은 소멸(법§13②)."
+            )
         if r.land_transfer_tax:
             st.caption(
                 f"※ 토지등 양도소득에 대한 법인세 **{r.land_transfer_tax:,}원** (법§55의2) — "
@@ -1296,6 +1346,23 @@ def render(proj) -> None:
                 st.caption(
                     "⚠ '추인확인' 항목은 당기 추인(감소)이 자동 반영되지 않았습니다 — 위 표에서 직접 입력해 보정하세요."
                 )
+            # 을표 추인(감소) 합계 ↔ 3단계 '전기 유보 당기 추인' 소득금액 입력 대조
+            #   (감가상각 부인누계 추인은 엔진 자동 반영이므로 소득금액 입력에서 제외)
+            _ov_sum = sum(
+                int(v) for k, v in (_new_ov or {}).items()
+                if k != "감가상각 부인누계"
+            )
+            _mi_rev = (int(proj.manual_input.prior_reserve_reversal_deduct or 0)
+                       + int(proj.manual_input.prior_reserve_reversal_add or 0))
+            if _ov_sum or _mi_rev:
+                if _ov_sum != _mi_rev:
+                    st.warning(
+                        f"⚠ 정합성 확인 — 을표 추인(감소) 합계 {_ov_sum:,}원(감가상각 제외) ≠ "
+                        f"3단계 '전기 유보 당기 추인' 소득금액 입력 {_mi_rev:,}원. "
+                        "표 보정과 소득금액 반영이 일치하는지 확인하세요."
+                    )
+                else:
+                    st.caption(f"✓ 을표 추인 합계 {_ov_sum:,}원 = 소득금액 추인 입력 {_mi_rev:,}원 (정합)")
 
         # ── 검토메모 — 발생 항목별 회계사 메모 (.taxproj에 저장되어 차기 참조) ──
         _nonzero_items = [
@@ -1342,11 +1409,22 @@ def render(proj) -> None:
                 "재무자료·세무조정 결과에서 규칙엔진이 발굴한 자문 후보입니다. "
                 "모두 미확정 — 회계사가 요건 검토 후 채택·확정하세요 (AI가 적용을 확정하지 않습니다).",
             ), unsafe_allow_html=True)
+            _narr = st.session_state.get("consulting_narration") or {}
+            if st.button("LLM으로 고객용 문장 다듬기 (선택)"):
+                from src.llm.consultant import narrate_topics
+                with st.spinner("로컬 LLM이 권고 문장을 다듬는 중..."):
+                    try:
+                        _narr = narrate_topics(_topics)
+                        st.session_state["consulting_narration"] = _narr
+                    except Exception as _e:
+                        st.warning(f"LLM 문장화 실패 — 규칙엔진 문장 사용 ({type(_e).__name__})")
+            if _narr:
+                st.caption("LLM이 다듬은 문장입니다 — 숫자·법령·요건은 규칙엔진 값 그대로, 톤만 변경. 검토 후 사용하세요.")
             _cat_icon = {"리스크": "🔴", "특례·감면": "🟢", "정책": "🔵"}
             for _t in _topics:
                 with st.expander(f"{_cat_icon.get(_t.category, '·')} [{_t.category}] {_t.title} · {_t.severity}"):
                     st.markdown(f"**발견:** {_t.finding}")
-                    st.markdown(f"**권고:** {_t.suggestion}")
+                    st.markdown(f"**권고:** {_narr.get(_t.title, _t.suggestion)}")
                     st.caption(f"근거: {_t.legal_basis} · 상태: {_t.status}")
 
         # ── 자동 세무조정 계산 내역 (산식 + 분개장 근거 드릴다운) ──────────

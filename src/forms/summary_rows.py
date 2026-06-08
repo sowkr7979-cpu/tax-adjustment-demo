@@ -56,6 +56,7 @@ def adjustment_rows(
         ("손금불산입", "징벌적 손해배상금",         r.punitive_damages,         "법§21의2", "기타사외유출"),
         ("익금산입",   "간주임대료",               r.deemed_rental,            "조특법§138", "기타사외유출"),
         ("익금산입",   "부당행위계산 부인",         r.unfair_transaction,       "법§52, 영§88", _disp("부당행위계산 부인", "배당·상여 등")),
+        ("익금산입",   "전기 △유보 추인",          r.prior_reserve_reversal_add, "법§34③ 등", "유보"),
     ]
 
     # 채권자불분명 사채이자 — 원천세 상당액=기타사외유출 / 잔액=대표자상여 (영§106)
@@ -91,6 +92,8 @@ def adjustment_rows(
                               _disp("가지급금 인정이자", "상여 등")))
     deduct_items = [
         ("손금산입",   "감가상각 전기부인액 추인",  r.depreciation_approved,    "법§23",    "△유보"),
+        ("손금산입",   "전기 유보 추인",           r.prior_reserve_reversal_deduct, "법§34③ 등", "△유보"),
+        ("손금산입",   "기부금 이월액 당기 공제",   r.donation_carryforward_deduction, "법§24⑤⑥", "기타"),
         ("손금산입",   "퇴직연금 부담금",          r.pension_deduction,        "영§44의2", "△유보"),
         ("익금불산입", "수입배당금",               r.dividend_exclusion,       "법§18의2", "기타"),
         ("익금불산입", "외화환산이익 (평가 미신고)", r.forex_gain_excluded,     "법§42③",   "△유보"),

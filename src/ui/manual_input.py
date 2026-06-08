@@ -1006,6 +1006,35 @@ def render_adjustment_data(
                 help="전액 손금불산입",
             ))
 
+        # ── 전기 이월 기부금 (법§24⑤⑥) — 발생연도별, 당기 우선공제 대상 ──
+        import pandas as pd
+        st.markdown("**전기 이월 기부금 (법§24⑤, 10년)**")
+        st.caption(
+            "전기 한도초과로 이월된 특례·일반 기부금을 발생연도별로 입력하면, 당기 한도 내에서 "
+            "당기 지출분보다 **먼저** 손금산입됩니다(법§24⑥). 공제기한(10년) 초과분은 자동 소멸. "
+            "전년도 .taxproj 승계 시 자동 채워집니다."
+        )
+        _cf_df = pd.DataFrame(
+            mi.donation_carryforwards or [],
+            columns=["year", "type", "amount"],
+        )
+        _cf_edit = st.data_editor(
+            _cf_df, num_rows="dynamic",
+            column_config={
+                "year": st.column_config.NumberColumn("발생연도", format="%d", min_value=2000, max_value=2100),
+                "type": st.column_config.SelectboxColumn("종류", options=["특례", "일반"]),
+                "amount": st.column_config.NumberColumn("이월액 (원)", format="%d", min_value=0),
+            },
+            use_container_width=True, hide_index=True, key="donation_cf_editor",
+        )
+        mi.donation_carryforwards = [
+            {"year": int(row["year"]), "type": str(row["type"] or "일반"),
+             "amount": int(row["amount"] or 0)}
+            for _, row in _cf_edit.iterrows()
+            if row.get("year") and int(row.get("amount") or 0) > 0
+            and str(row.get("type") or "") in ("특례", "일반")
+        ]
+
     with st.expander("재고자산·유가증권 평가 (법§42, 영§74~75)"):
         st.caption(
             "재고자산 종류별(영§73)로 신고한 평가방법과 장부상 방법을 선택하세요. "

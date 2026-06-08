@@ -39,6 +39,12 @@ def test_under_report_with_fraud_portion():
     assert calc_under_report_penalty(10_000_000, fraud_portion=4_000_000) == 2_200_000
 
 
+def test_under_report_fraud_portion_clamped():
+    """부정분이 과소신고세액을 초과하면 전액 부정분으로 캡 (음수 일반분 방지)."""
+    # fraud_portion 1,500만 > 과소신고 1,000만 → 전액 부정 40% = 400만
+    assert calc_under_report_penalty(10_000_000, fraud_portion=15_000_000) == 4_000_000
+
+
 # ── 납부지연가산세 (§47의4) ───────────────────────────────────────────────────
 
 def test_late_payment_daily():
@@ -61,3 +67,16 @@ def test_aggregate_surtax_total():
     assert r.late_payment == 220_000
     assert r.other_manual == 500_000
     assert r.total == 2_200_000 + 220_000 + 500_000
+
+
+def test_aggregate_surtax_no_filing_wires_revenue_floor():
+    """aggregate_surtax가 무신고 경로에 수입금액 max·부정 플래그를 올바로 배선한다."""
+    # 무신고 일반 20% = 200만 vs 수입 100억×0.07% = 700만 → 700만이 r.no_filing·r.total에 반영
+    r = aggregate_surtax(
+        no_filing_tax=10_000_000, revenue=10_000_000_000,
+    )
+    assert r.no_filing == 7_000_000
+    assert r.total == 7_000_000
+    # 부정행위 플래그 배선 확인 (40%)
+    r2 = aggregate_surtax(no_filing_tax=10_000_000, no_filing_fraud=True)
+    assert r2.no_filing == 4_000_000

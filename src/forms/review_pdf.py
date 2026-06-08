@@ -189,6 +189,7 @@ def build_review_pdf(
     reserve_decrease_overrides: dict[str, int] | None = None,
     reserve_manual_rows: list[dict] | None = None,
     disposition_choices: dict | None = None,
+    consulting_topics: list | None = None,
 ) -> bytes:
     fy_label = f"{fy_start} ~ {fy_end}"
     pdf = _ReviewPDF(company_name or "(회사명 미입력)", fy_label)
@@ -388,10 +389,35 @@ def build_review_pdf(
             pdf.cell(0, 5, f"※ 증감액 상위 25개만 표시 (전체 {len(yoy_df)}개는 앱 CSV 참조)",
                      new_x="LMARGIN", new_y="NEXT")
 
-    # ── ⑦ 고객 설명 메모 ─────────────────────────────────────────────────────
+    # ── ⑦ 세무 컨설팅 코멘트 (규칙엔진 발굴 — 회계사 채택 후 확정) ──────────────
+    if consulting_topics:
+        pdf.add_page()
+        _h2(pdf, f"7. 세무 컨설팅 코멘트 (검토 후보 {len(consulting_topics)}건 — 미확정)")
+        _body_font(pdf, 7.5)
+        pdf.set_text_color(134, 134, 139)
+        pdf.multi_cell(0, 4,
+                       "※ 재무자료·세무조정 결과에서 규칙엔진이 발굴한 자문 후보입니다. 모두 미확정이며 "
+                       "회계사가 요건 검토 후 채택·확정합니다 (AI가 적용을 확정하지 않습니다).",
+                       new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*_HEAD)
+        for _t in consulting_topics:
+            _body_font(pdf, 9, bold=True)
+            pdf.multi_cell(0, 5.5, f"[{_t.category}·{_t.severity}] {_t.title}",
+                           new_x="LMARGIN", new_y="NEXT")
+            _body_font(pdf, 8)
+            pdf.multi_cell(0, 4.5, f"  발견: {_t.finding}", new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 4.5, f"  권고: {_t.suggestion}", new_x="LMARGIN", new_y="NEXT")
+            _body_font(pdf, 7.5)
+            pdf.set_text_color(134, 134, 139)
+            pdf.multi_cell(0, 4, f"  근거: {_t.legal_basis} · {_t.status}",
+                           new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_HEAD)
+            pdf.ln(1)
+
+    # ── ⑧ 고객 설명 메모 ─────────────────────────────────────────────────────
     if client_memo:
         pdf.add_page()
-        _h2(pdf, "7. 고객 설명용 메모 (초안)")
+        _h2(pdf, "8. 고객 설명용 메모 (초안)")
         _body_font(pdf, 8.5)
         pdf.multi_cell(0, 5, client_memo, new_x="LMARGIN", new_y="NEXT")
 

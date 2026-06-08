@@ -83,6 +83,8 @@ class ManualInput:
     donation_special: int = 0                  # 특례기부금
     donation_general: int = 0                  # 일반기부금
     donation_nondesignated: int = 0            # 비지정기부금 (전액 손금불산입)
+    # 전기 이월 기부금 (법§24⑤, 10년) — 발생연도별 [{year, type:'특례'|'일반', amount}]
+    donation_carryforwards: list[dict] = field(default_factory=list)
     donation_line_classes: dict = field(default_factory=dict)  # 분개 라인별 분류 {전표|행: 분류}
     misc_line_checks: dict = field(default_factory=dict)       # 기타 항목 라인별 체크 {필드: {전표|행: bool}}
     # 재고자산 평가 (법§42, 영§74)
@@ -193,6 +195,13 @@ class TaxProject:
             cm.prior_reserves = [dict(x) for x in prev_reserves]
             notes.append(f"전기 유보 {len(cm.prior_reserves)}건"
                          + (" (전년 자동계산 결과 기반)" if ta.get("reserves") else ""))
+
+        # ── 이월 기부금 (법§24⑤) — 전년 계산의 차기 이월분이 있으면 그것을, 없으면 입력값 ──
+        prev_don_cf = ta.get("donation_carryforwards") or pm.donation_carryforwards
+        if prev_don_cf:
+            cm.donation_carryforwards = [dict(x) for x in prev_don_cf]
+            notes.append(f"이월 기부금 {len(cm.donation_carryforwards)}건 "
+                         "(공제기한 10년 — 당기 우선공제 대상)")
 
         # ── 감가상각 부인누계 — 전년 당기말 부인누계 승계 ──
         if ta.get("depreciation_denial_end"):

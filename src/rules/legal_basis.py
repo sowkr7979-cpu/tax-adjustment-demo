@@ -55,6 +55,7 @@ ADJUSTMENT_LEGAL_BASIS: dict[str, tuple[str, str, str]] = {
     "deemed_rental":             ("조세특례제한법 제138조 (임대보증금 등의 간주익금)",  LAW_SPECIAL_TAX,     "013800"),
     # ── 차감조정 (손금산입·익금불산입) ──
     "depreciation_approved":     ("법인세법 제23조 (전기 부인액 추인)",               LAW_CORP_TAX,        "002300"),
+    "donation_carryforward_deduction": ("법인세법 제24조제5항·제6항 (이월 기부금 우선공제)", LAW_CORP_TAX,    "002400"),
     "dividend_exclusion":        ("법인세법 제18조의2 (수입배당금액의 익금불산입)",    LAW_CORP_TAX,        "001802"),
     "debt_relief_offset":        ("법인세법 제18조제6호 (자산수증익·채무면제익 중 이월결손금 보전 충당액 익금불산입)", LAW_CORP_TAX, "001800"),
     "refund_interest_excluded":  ("법인세법 제18조제4호 (국세·지방세 과오납 환급금 이자 익금불산입)", LAW_CORP_TAX, "001800"),

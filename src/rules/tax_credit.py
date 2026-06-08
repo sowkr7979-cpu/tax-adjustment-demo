@@ -21,6 +21,9 @@ def calc_final_tax(
 
     농어촌특별세(농특세법§5①): 농특세 과세대상 감면세액(farm_surtax_taxable=True) × 20%.
       배제된 감면은 실제 감면받지 못한 것이므로 농특세 과세표준에서 제외한다.
+      단, 최저한세 배제(excluded)는 '최저한세 적용대상 감면 전체'에서 발생하므로,
+      농특세 과세대상 감면에는 그 중 '농특세 과세대상 최저한세 감면'이 차지하는 비율만큼만
+      안분하여 차감한다 (농특 비과세 감면의 배제분까지 빼면 농특세가 과소계상됨).
       농특세는 법인세와 별도로 신고·납부하므로 차감납부세액에 포함하지 않는다.
     """
     min_credits = sum(c.amount for c in tax_credits if c.subject_to_min_tax)
@@ -40,11 +43,17 @@ def calc_final_tax(
     final_tax = max(0, after_min - post_credits)
     final_due = max(0, final_tax + surtax - prepaid_tax)
 
-    # 농어촌특별세 — 실제 감면된 농특세 과세대상 세액 기준 (배제분 제외)
-    farm_taxable_credits = sum(
-        c.amount for c in tax_credits if c.farm_surtax_taxable
+    # 농어촌특별세 — 실제 감면된 농특세 과세대상 세액 기준 (최저한세 배제분 안분 차감)
+    farm_min_credits = sum(
+        c.amount for c in tax_credits if c.subject_to_min_tax and c.farm_surtax_taxable
     )
-    farm_surtax = int(max(0, farm_taxable_credits - excluded) * FARM_SURTAX_RATE)
+    farm_post_credits = sum(
+        c.amount for c in tax_credits if not c.subject_to_min_tax and c.farm_surtax_taxable
+    )
+    # 배제분(excluded)은 최저한세 대상 감면(min_credits) 전체에서 발생 → 농특 과세분 비율만 안분
+    farm_excluded = (excluded * farm_min_credits // min_credits) if min_credits > 0 else 0
+    farm_allowed = farm_post_credits + max(0, farm_min_credits - farm_excluded)
+    farm_surtax = int(farm_allowed * FARM_SURTAX_RATE)
 
     return {
         "산출세액": gross_tax,

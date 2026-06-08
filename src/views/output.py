@@ -11,6 +11,7 @@ from src.forms.audit_trail import generate_audit_trail
 from src.llm.ollama_client import OllamaClient
 from src.ui.styles import page_header, section_title, info_card
 from src.utils.safe_export import safe_filename
+from src.rules.consulting import build_consulting_topics
 from src.views.common import _parse_stored_date
 
 
@@ -98,6 +99,10 @@ def render(proj) -> None:
                         reserve_decrease_overrides=(proj.tax_adjustments or {}).get("reserve_decrease_overrides", {}),
                         reserve_manual_rows=(proj.tax_adjustments or {}).get("reserve_manual_rows", []),
                         disposition_choices=(proj.tax_adjustments or {}).get("disposition_choices", {}),
+                        consulting_topics=build_consulting_topics(
+                            company=proj.company, manual_input=proj.manual_input,
+                            result=r, fiscal_year_end=fy_end_val,
+                        ),
                     )
                 except FileNotFoundError as e:
                     st.error(f"PDF 생성 실패 — 한글 폰트를 찾지 못했습니다: {e}")

@@ -21,6 +21,10 @@ def _add(rows, name):
     return [x for x in rows[0] if x[1] == name]
 
 
+def _ded(rows, name):
+    return [x for x in rows[1] if x[1] == name]
+
+
 def test_legacy_single_deemed_interest_row():
     """choices 미전달(레거시) → 인정이자 단일 행, 기존 라벨 유지."""
     r = _r(deemed_interest=12_000_000,
@@ -81,3 +85,35 @@ def test_party_sum_mismatch_falls_back_single():
     add, _ = adjustment_rows(r, {"인정이자|김": "주주"})
     assert len(_add((add, _), "가지급금 인정이자")) == 1
     assert _add((add, _), "가지급금 인정이자 (김)") == []
+
+
+def test_nonreal_name_interest_split_rows():
+    """비실명 채권·증권이자(법§28①2호) — 원천세 분리 시 2행 (1호와 동일 처분)."""
+    r = _r(interest_nonreal_name=10_000_000)
+    add, ded = adjustment_rows(r, {"비실명 채권·증권이자|원천세": 3_000_000})
+    rows = _add((add, ded), "비실명 채권·증권이자")
+    assert sorted([(x[2], x[4]) for x in rows]) == sorted(
+        [(3_000_000, "기타사외유출"), (7_000_000, "대표자상여")])
+
+
+def test_section18_4_5_6_deduct_rows():
+    """법§18 4·5·6호 익금불산입이 차감조정 행으로 출력된다 (신규 분기)."""
+    r = _r(debt_relief_offset=5_000_000,
+           refund_interest_excluded=1_500_000,
+           vat_output_excluded=500_000)
+    add, ded = adjustment_rows(r)
+    assert _ded((add, ded), "자산수증익·채무면제익 (이월결손금 보전)")[0][2] == 5_000_000
+    assert _ded((add, ded), "국세환급금 이자")[0][2] == 1_500_000
+    assert _ded((add, ded), "부가가치세 매출세액")[0][2] == 500_000
+    # 모두 '기타' 처분 (사외유출 아님)
+    assert all(_ded((add, ded), n)[0][4] == "기타" for n in
+               ("국세환급금 이자", "부가가치세 매출세액"))
+
+
+def test_prior_reserve_reversal_rows():
+    """전기 유보 추인 — 익금산입(가산)·손금산입(차감) 양방향 행."""
+    r = _r(prior_reserve_reversal_add=5_000_000,
+           prior_reserve_reversal_deduct=12_000_000)
+    add, ded = adjustment_rows(r)
+    assert _add((add, ded), "전기 △유보 추인")[0][2] == 5_000_000
+    assert _ded((add, ded), "전기 유보 추인")[0][2] == 12_000_000

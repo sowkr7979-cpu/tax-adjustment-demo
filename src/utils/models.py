@@ -210,6 +210,8 @@ class TaxAdjustmentResult:
     forex_gain_excluded: int = 0         # 외화환산이익 (평가방법 미신고)
     derivative_gain_excluded: int = 0    # 파생상품 평가이익 (미신고)
     securities_gain_excluded: int = 0    # 유가증권 평가이익 (영§75)
+    # 전기 이월 기부금 당기 손금산입 (법§24⑤⑥ 이월분 우선공제 — 처분 "기타")
+    donation_carryforward_deduction: int = 0
     # 자산수증익·채무면제익 중 이월결손금 보전 충당액 (법§18 6호, 영§16 — 익금불산입)
     # 자산수증익·채무면제익은 수익 계상되어 이미 net_income에 포함 → 보전충당분만 손금산입(△)
     debt_relief_offset: int = 0
@@ -267,4 +269,5 @@ class TaxAdjustmentResult:
             + self.debt_relief_offset
             + self.refund_interest_excluded + self.vat_output_excluded
             + self.prior_reserve_reversal_deduct
+            + self.donation_carryforward_deduction
         )

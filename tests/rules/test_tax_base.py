@@ -89,6 +89,37 @@ def test_farm_surtax_excludes_minimum_tax_disallowed():
     assert r.farm_surtax == 400_000
 
 
+def test_farm_surtax_apportions_exclusion_across_mixed_credits():
+    """농특 비과세·과세 감면이 동시 최저한세 배제 시 — 배제분을 과세분 비율로만 안분 차감.
+
+    과표 1억(중소): 산출세액 9,000,000, 최저한세 7,000,000.
+    중소특별감면 4,000,000(농특 비과세) + 통합투자 4,000,000(농특 과세), 둘 다 최저한세 대상.
+    감면후 = 9,000,000 − 8,000,000 = 1,000,000 < 7,000,000 → 배제 6,000,000.
+    배제분 안분: 농특과세 4,000,000 / 최저한세감면 8,000,000 × 6,000,000 = 3,000,000.
+    농특 실제감면 = 4,000,000 − 3,000,000 = 1,000,000 → 농특세 = 200,000.
+    (배제분 전액을 농특과세분에서 빼던 종전 로직은 0으로 과소계상 — 회귀 방지)
+    """
+    r = TaxAdjustmentResult(
+        fiscal_year_start=date(2024, 1, 1),
+        fiscal_year_end=date(2024, 12, 31),
+        is_sme=True,
+    )
+    compute_all(
+        r,
+        net_income=100_000_000,
+        carryforward_losses=[],
+        fiscal_year_end=date(2024, 12, 31),
+        tax_credits=[
+            TaxCredit(name="중소기업특별세액감면", amount=4_000_000,
+                      subject_to_min_tax=True, farm_surtax_taxable=False),
+            TaxCredit(name="통합투자세액공제", amount=4_000_000,
+                      subject_to_min_tax=True, farm_surtax_taxable=True),
+        ],
+    )
+    assert r.excluded_credits == 6_000_000
+    assert r.farm_surtax == 200_000
+
+
 def test_land_transfer_tax_rates():
     """법§55의2 세율: 비사업용토지 10%(미등기 40%)·주택별장 20%·조합원입주권분양권 20%."""
     assert calc_land_transfer_tax(100_000_000, "비사업용토지") == 10_000_000
@@ -98,6 +129,8 @@ def test_land_transfer_tax_rates():
     assert calc_land_transfer_tax(100_000_000, "조합원입주권분양권") == 20_000_000
     assert calc_land_transfer_tax(0, "비사업용토지") == 0
     assert calc_land_transfer_tax(-5_000, "비사업용토지") == 0
+    # 미지정/오타 자산유형은 0으로 폴백 (UI 드롭다운 외 값 방어)
+    assert calc_land_transfer_tax(100_000_000, "기타") == 0
 
 
 def test_compute_all_adds_land_transfer_tax():
@@ -160,6 +193,60 @@ def test_tax_base_general_80pct():
     )
     assert deducted == 80_000_000
     assert base == 20_000_000
+
+
+def test_tax_base_non_taxable_and_income_deduction():
+    """비과세소득·소득공제는 과세표준에서 추가 차감 (법§13①2호·3호)."""
+    base, deducted = calc_tax_base(
+        business_income=100_000_000,
+        carryforward_losses=[],
+        is_sme=True,
+        non_taxable=10_000_000,
+        income_deduction=5_000_000,
+        fiscal_year_end=date(2025, 12, 31),
+    )
+    assert deducted == 0
+    assert base == 85_000_000   # 1억 − 비과세 1천만 − 소득공제 5백만
+
+
+def test_compute_all_wires_non_taxable_income_deduction():
+    """compute_all이 비과세·소득공제를 calc_tax_base로 전달한다 (배선 회귀)."""
+    r = TaxAdjustmentResult(
+        fiscal_year_start=date(2024, 1, 1),
+        fiscal_year_end=date(2024, 12, 31), is_sme=True,
+    )
+    compute_all(
+        r,
+        net_income=200_000_000,
+        carryforward_losses=[],
+        fiscal_year_end=date(2024, 12, 31),
+        tax_credits=[],
+        non_taxable=30_000_000,
+        income_deduction=20_000_000,
+    )
+    assert r.tax_base == 150_000_000   # 2억 − 5천만
+
+
+def test_prior_reserve_reversal_flows_into_income():
+    """전기 유보 추인: 손금산입은 소득금액 차감, 익금산입은 가산 (D)."""
+    r = TaxAdjustmentResult(
+        fiscal_year_start=date(2024, 1, 1),
+        fiscal_year_end=date(2024, 12, 31), is_sme=True,
+    )
+    r.prior_reserve_reversal_deduct = 12_000_000   # 손금산입(△유보)
+    r.prior_reserve_reversal_add = 5_000_000       # 익금산입(유보)
+    assert r.total_deduct == 12_000_000
+    assert r.total_add_back == 5_000_000
+    compute_all(
+        r,
+        net_income=100_000_000,
+        carryforward_losses=[],
+        fiscal_year_end=date(2024, 12, 31),
+        tax_credits=[],
+    )
+    # 각사업연도소득 = 1억 + 익금산입 5백만 − 손금산입 1천2백만
+    assert r.business_income == 93_000_000
+    assert r.tax_base == 93_000_000
 
 
 def test_loss_carryforward_expired():
