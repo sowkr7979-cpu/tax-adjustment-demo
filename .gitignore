@@ -1,0 +1,28 @@
+﻿# 비밀키 — 절대 커밋·공유 금지
+.env
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_tmp/
+
+# 미사용 보관
+_archive/
+
+# 작업 중간 산출물 (텍스트 추출·검색 결과)
+pdf_extracted.txt
+search_result*.txt
+form_refs.txt
+sme_pdf.txt
+ceo_pdf.txt
+self_verify_forms.txt
+law_changes.txt
+ceo_key_pages.txt
+verify_form_list.txt
+
+# 고객 자료 (실제 회계 데이터는 저장소에 넣지 않음)
+*.xls
+*.xlsx
+*.hwp
