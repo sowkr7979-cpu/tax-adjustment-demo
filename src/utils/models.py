@@ -110,7 +110,7 @@ class RuleClassificationResult:
 
 @dataclass
 class LLMAnalysisResult:
-    """2차 LLM 정밀 분석 결과."""
+    """AI 검토 보조 결과."""
     journal_id: str
     line_id: int
     issue_possible: bool
@@ -156,6 +156,7 @@ class TaxCredit:
     name: str
     amount: int
     subject_to_min_tax: bool  # True: 최저한세 적용 대상
+    farm_surtax_taxable: bool = False  # True: 농어촌특별세 과세대상 (농특세법§5①, §4 비과세 제외)
 
 
 @dataclass
@@ -174,9 +175,11 @@ class TaxAdjustmentResult:
     pension_deduction: int = 0   # 퇴직연금 부담금 손금산입 (영§44의2④, △유보)
     bad_debt_excess: int = 0
     interest_unknown_creditor: int = 0
+    interest_nonreal_name: int = 0       # 비실명 채권·증권이자 (법§28①2호) — 전액 손금불산입
     interest_construction: int = 0
     interest_non_business: int = 0
     vehicle_disallowed: int = 0
+    vehicle_depr_excess: int = 0   # 업무용승용차 감가상각 한도초과(유보) — vehicle_disallowed의 부분집합
     penalty: int = 0
     officer_bonus_excess: int = 0
     officer_retirement_excess: int = 0
@@ -193,18 +196,25 @@ class TaxAdjustmentResult:
     # 익금산입
     deemed_interest: int = 0
     deemed_rental: int = 0
-    debt_forgiveness: int = 0
-    asset_gift: int = 0
     unfair_transaction: int = 0          # 부당행위계산 부인 (법§52, 영§88 — 고가매입·저가양도 등)
+    # 전기 △유보 당기 추인 익금산입 (회계사 명시 입력 — 감가상각·기부금이월 제외)
+    prior_reserve_reversal_add: int = 0
 
     # 손금산입
     depreciation_approved: int = 0
+    # 전기 유보 당기 추인 손금산입(△유보) — 대손충당금 총액법 환입(법§34③) 등, 감가상각 제외
+    prior_reserve_reversal_deduct: int = 0
 
     # 익금불산입
     dividend_exclusion: int = 0
     forex_gain_excluded: int = 0         # 외화환산이익 (평가방법 미신고)
     derivative_gain_excluded: int = 0    # 파생상품 평가이익 (미신고)
     securities_gain_excluded: int = 0    # 유가증권 평가이익 (영§75)
+    # 자산수증익·채무면제익 중 이월결손금 보전 충당액 (법§18 6호, 영§16 — 익금불산입)
+    # 자산수증익·채무면제익은 수익 계상되어 이미 net_income에 포함 → 보전충당분만 손금산입(△)
+    debt_relief_offset: int = 0
+    refund_interest_excluded: int = 0    # 국세·지방세 과오납 환급금 이자 (법§18 4호 — 익금불산입)
+    vat_output_excluded: int = 0         # 부가가치세 매출세액 (법§18 5호 — 익금불산입)
 
     # 집계 (calc() 호출 후 채워짐)
     net_income: int = 0
@@ -217,7 +227,12 @@ class TaxAdjustmentResult:
     excluded_credits: int = 0
     surtax: int = 0
     prepaid_tax: int = 0
+    land_transfer_tax: int = 0    # 토지등 양도소득에 대한 법인세 (법§55의2 — 일반 법인세에 추가 납부)
     final_tax_due: int = 0
+    farm_surtax: int = 0          # 농어촌특별세 (농특세법§5① — 감면세액×20%, 법인세와 별도 신고·납부)
+
+    # 가지급금 인정이자 거래상대방별 익금산입 내역 — 소득처분 귀속자 입력용 (영§106)
+    deemed_interest_parties: list = field(default_factory=list)  # [{"name", "amount"}]
 
     rule_engine_version: str = "0.1.0"
     law_reference_date: date = field(default_factory=date.today)
@@ -228,7 +243,8 @@ class TaxAdjustmentResult:
             self.depreciation_excess + self.entertainment_excess
             + self.entertainment_no_receipt + self.donation_excess
             + self.pension_excess + self.bad_debt_excess
-            + self.interest_unknown_creditor + self.interest_construction
+            + self.interest_unknown_creditor + self.interest_nonreal_name
+            + self.interest_construction
             + self.interest_non_business + self.vehicle_disallowed
             + self.penalty + self.officer_bonus_excess
             + self.officer_retirement_excess
@@ -238,8 +254,8 @@ class TaxAdjustmentResult:
             + self.welfare_disallowed + self.joint_expense_excess
             + self.non_business_expense + self.punitive_damages
             + self.deemed_interest + self.deemed_rental
-            + self.debt_forgiveness + self.asset_gift
             + self.unfair_transaction
+            + self.prior_reserve_reversal_add
         )
 
     @property
@@ -248,4 +264,7 @@ class TaxAdjustmentResult:
             self.depreciation_approved + self.dividend_exclusion
             + self.forex_gain_excluded + self.derivative_gain_excluded
             + self.securities_gain_excluded + self.pension_deduction
+            + self.debt_relief_offset
+            + self.refund_interest_excluded + self.vat_output_excluded
+            + self.prior_reserve_reversal_deduct
         )

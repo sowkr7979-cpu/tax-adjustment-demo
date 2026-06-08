@@ -2,11 +2,37 @@
 """적수(積數) 계산 및 거래상대방별 인정이자 테스트 (영§89⑤, 영§88③, 영§53③)."""
 from datetime import date
 
-from src.rules.jeoksu import jeoksu_from_deltas, fy_days
+from src.rules.jeoksu import jeoksu_from_deltas, fy_days, lines_to_deltas
 from src.rules.income_items import calc_deemed_interest_by_party
+from src.utils.models import JournalLine
 
 FY_S = date(2025, 1, 1)
 FY_E = date(2025, 12, 31)
+
+
+def _jline(*, debit=0, credit=0, d=FY_S, name="임대보증금"):
+    return JournalLine(
+        journal_id="1", line_no=0, date=d, account_code="", account_name=name,
+        description="", counterparty_code="", counterparty_name="", debit=debit,
+        credit=credit, evidence_type="", evidence_no="", card_no="", vehicle_no="",
+        project="", source_file="", source_sheet="", source_row=0,
+    )
+
+
+def test_received_deposit_credit_positive():
+    """받은 임대보증금(부채·대변) — debit_positive=False → 대변이 양(+) 증가로 적수 반영."""
+    deltas = lines_to_deltas(
+        [_jline(credit=100_000_000, d=date(2025, 7, 1))], debit_positive=False,
+    )
+    assert deltas == [(date(2025, 7, 1), 100_000_000)]
+    # 기초 50M(연중) + 7/1 수령 100M → 50M×181 + 150M×184
+    j = jeoksu_from_deltas(deltas, FY_S, FY_E, opening=50_000_000, floor_zero=False)
+    assert j == 50_000_000 * 181 + 150_000_000 * 184
+
+
+def test_party_opening_only_jeoksu():
+    """거래 0건·기초이월만 있는 차주 → 기초 × 365 (별지19호 1행 유지)."""
+    assert jeoksu_from_deltas([], FY_S, FY_E, opening=80_000_000) == 80_000_000 * 365
 
 
 def test_fy_days():

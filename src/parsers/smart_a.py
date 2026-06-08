@@ -413,50 +413,83 @@ def parse_fixed_assets(path: str | Path) -> list[FixedAsset]:
 
 # ── 분개장 ─────────────────────────────────────────────────────────────────────
 
-def parse_journal(path: str | Path, source_file: str = "") -> list[JournalLine]:
-    """분개장 Excel → JournalLine 리스트. 더존 Smart A 컬럼 별칭(_COL_ALIASES) 지원."""
-    df = _read_excel(path)
-    source = source_file or str(path)
-    results = []
+def _journal_lines_from_df(df: "pd.DataFrame", source: str) -> list[JournalLine]:
+    """분개 DataFrame → JournalLine 리스트 (벡터화 — 대용량 분개 수만 건 대응).
+
+    컬럼 별칭을 1회만 해소하고 각 컬럼을 리스트로 추출해, 행별 iterrows(Series 생성)와
+    별칭 탐색 루프를 제거한다. 입력 df는 read_any_table가 dtype=str·fillna("") 처리한
+    문자열 표라 _col_get(str 변환)과 동일 결과를 보장한다.
+    """
+    n = len(df)
+    colset = set(df.columns)
+
+    def _list(key: str) -> list:
+        for alias in _COL_ALIASES.get(key, [key]):
+            if alias in colset:
+                return df[alias].tolist()
+        return [""] * n
+
+    dates   = _list("날짜")
+    jids    = _list("전표번호")
+    acodes  = _list("계정코드")
+    anames  = _list("계정명")
+    descs   = _list("적요")
+    ccodes  = _list("거래처코드")
+    cnames  = _list("거래처명")
+    debits  = _list("차변")
+    credits = _list("대변")
+    etypes  = _list("증빙구분")
+    enos    = _list("증빙번호")
+    cards   = _list("카드번호")
+    vnos    = _list("차량번호")
+    projs   = _list("프로젝트")
+    sheets  = df["__sheet__"].tolist() if "__sheet__" in colset else [""] * n
+    rmeta   = df["__row__"].tolist() if "__row__" in colset else ["0"] * n
+
+    results: list[JournalLine] = []
     skipped = 0
-    for i, (_, row) in enumerate(df.iterrows()):
+    for i in range(n):
         try:
-            dt = _to_date(_col_get(row, "날짜"))
+            dt = _to_date(str(dates[i]))
             if dt is None:
                 continue
-            line = JournalLine(
-                journal_id=_col_get(row, "전표번호"),
+            results.append(JournalLine(
+                journal_id=str(jids[i]),
                 line_no=0,
                 date=dt,
-                account_code=_col_get(row, "계정코드"),
-                account_name=_col_get(row, "계정명"),
-                description=_col_get(row, "적요"),
-                counterparty_code=_col_get(row, "거래처코드"),
-                counterparty_name=_col_get(row, "거래처명"),
-                debit=_to_int(_col_get(row, "차변") or "0"),
-                credit=_to_int(_col_get(row, "대변") or "0"),
-                evidence_type=_col_get(row, "증빙구분"),
-                evidence_no=_col_get(row, "증빙번호"),
-                card_no=_col_get(row, "카드번호"),
-                vehicle_no=_col_get(row, "차량번호"),
-                project=_col_get(row, "프로젝트"),
+                account_code=str(acodes[i]),
+                account_name=str(anames[i]),
+                description=str(descs[i]),
+                counterparty_code=str(ccodes[i]),
+                counterparty_name=str(cnames[i]),
+                debit=_to_int(str(debits[i]) or "0"),
+                credit=_to_int(str(credits[i]) or "0"),
+                evidence_type=str(etypes[i]),
+                evidence_no=str(enos[i]),
+                card_no=str(cards[i]),
+                vehicle_no=str(vnos[i]),
+                project=str(projs[i]),
                 source_file=source,
-                source_sheet=str(row.get("__sheet__", "")),
-                source_row=_to_int(str(row.get("__row__", "0"))),
-            )
-            results.append(line)
+                source_sheet=str(sheets[i]),
+                source_row=_to_int(str(rmeta[i]) or "0"),
+            ))
         except Exception as e:
             skipped += 1
             warnings.warn(
-                f"분개장 행 {i + 2} 건너뜀 ({_col_get(row, '전표번호') or '?'}): {e}",
+                f"분개장 행 {i + 2} 건너뜀 ({jids[i] if i < len(jids) else '?'}): {e}",
                 stacklevel=2,
             )
     if skipped:
         warnings.warn(
-            f"분개장: {len(results)}개 처리, {skipped}개 행 파싱 실패",
-            stacklevel=2,
+            f"분개장: {len(results)}개 처리, {skipped}개 행 파싱 실패", stacklevel=2,
         )
     return results
+
+
+def parse_journal(path: str | Path, source_file: str = "") -> list[JournalLine]:
+    """분개장 Excel → JournalLine 리스트. 더존 Smart A 컬럼 별칭(_COL_ALIASES) 지원."""
+    df = _read_excel(path)
+    return _journal_lines_from_df(df, source_file or str(path))
 
 
 # ── 계정별원장 ─────────────────────────────────────────────────────────────────

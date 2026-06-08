@@ -1,4 +1,4 @@
-"""LLM 2차 정밀 분석 — 선별된 분개에만 적용."""
+"""AI 검토 보조 — 회계사가 선택한 검토 큐에만 로컬 LLM 적용."""
 from __future__ import annotations
 import hashlib
 from datetime import date

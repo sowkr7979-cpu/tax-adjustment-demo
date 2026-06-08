@@ -97,6 +97,35 @@ def calc_gross_tax(
     return max(0, gross), table.effective_from
 
 
+# 토지등 양도소득에 대한 법인세율 (법§55의2① 각 호) — (등기, 미등기)
+LAND_TRANSFER_RATES: dict[str, tuple[float, float]] = {
+    "비사업용토지": (0.10, 0.40),   # 3호: 10%, 미등기 40%
+    "주택별장": (0.20, 0.40),       # 2호: 20%, 미등기 40%
+    "조합원입주권분양권": (0.20, 0.20),  # 4호: 20% (미등기 구분 없음)
+}
+
+
+def calc_land_transfer_tax(
+    transfer_income: int,
+    asset_type: str,
+    *,
+    unregistered: bool = False,
+) -> int:
+    """토지등 양도소득에 대한 법인세 (법§55의2①) — law.go.kr 원문 확인.
+
+    일반 법인세(과세표준×§55 세율)에 '추가'하여 납부하는 세액.
+    비사업용토지 10%(미등기 40%)·주택별장 20%(미등기 40%)·조합원입주권분양권 20%.
+    최저한세·세액공제 대상이 아니므로 산출세액 단계와 분리해 가산한다.
+    """
+    if transfer_income <= 0:
+        return 0
+    rates = LAND_TRANSFER_RATES.get(asset_type)
+    if rates is None:
+        return 0
+    rate = rates[1] if unregistered else rates[0]
+    return int(transfer_income * rate)
+
+
 def compute_all(
     result: TaxAdjustmentResult,
     *,
@@ -106,8 +135,15 @@ def compute_all(
     tax_credits: list,
     surtax: int = 0,
     prepaid_tax: int = 0,
+    land_transfer_tax: int = 0,
+    non_taxable: int = 0,
+    income_deduction: int = 0,
 ) -> TaxAdjustmentResult:
-    """TaxAdjustmentResult의 집계 필드를 채운다."""
+    """TaxAdjustmentResult의 집계 필드를 채운다.
+
+    non_taxable·income_deduction: 비과세소득·소득공제 (법§13①2호·3호) — 과세표준에서만
+      차감하며, 이월결손금 공제한도(각사업연도소득 기준)·기부금 한도 base에는 영향 없다.
+    """
     from src.rules.tax_credit import calc_final_tax
 
     result.net_income = net_income
@@ -120,6 +156,8 @@ def compute_all(
         business_income=result.business_income,
         carryforward_losses=carryforward_losses,
         is_sme=result.is_sme,
+        non_taxable=non_taxable,
+        income_deduction=income_deduction,
         fiscal_year_end=fiscal_year_end,
     )
     result.gross_tax, _ = calc_gross_tax(
@@ -140,5 +178,8 @@ def compute_all(
     result.excluded_credits = credit_result["배제된_감면"]
     result.surtax = surtax
     result.prepaid_tax = prepaid_tax
-    result.final_tax_due = credit_result["차감납부세액"]
+    # 토지등 양도소득 법인세(법§55의2)는 최저한세·감면과 무관하게 일반 법인세에 추가 납부
+    result.land_transfer_tax = max(0, land_transfer_tax)
+    result.final_tax_due = credit_result["차감납부세액"] + result.land_transfer_tax
+    result.farm_surtax = credit_result["농어촌특별세"]
     return result

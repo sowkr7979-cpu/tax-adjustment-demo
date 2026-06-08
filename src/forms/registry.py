@@ -73,8 +73,8 @@ FORM_REGISTRY: dict[str, FormEntry] = {
         byl_no="별지제8호서식",
     ),
     "DEEMED_INTEREST": FormEntry(
-        key="DEEMED_INTEREST", name="가지급금 인정이자 조정명세서",
-        byl_no="별지제11호서식",
+        key="DEEMED_INTEREST", name="가지급금 등의 인정이자 조정명세서",
+        byl_no="별지제19호서식",
     ),
     "BAD_DEBT": FormEntry(
         key="BAD_DEBT", name="대손충당금 및 대손금 조정명세서",

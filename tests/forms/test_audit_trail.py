@@ -51,3 +51,27 @@ def test_audit_trail_sheet2_uses_single_source():
         assert "대손충당금 한도초과" not in by_name
     finally:
         os.unlink(out)
+
+
+def test_audit_trail_has_reserve_sheet():
+    """자본금적립금(을) 시트가 생성되고 유보 잔액이 반영된다."""
+    r = _make_result()
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
+        out = f.name
+    try:
+        generate_audit_trail(
+            [], r, out, "(주)테스트", "model", "0.1.0", date(2025, 12, 31),
+            prior_reserves=[{"code": "대손충당금 한도초과", "amount": 1_000_000, "disposition": "유보"}],
+            depr_denial_end=9_000_000,
+        )
+        wb = load_workbook(out)
+        assert "자본금적립금(을)" in wb.sheetnames
+        ws = wb["자본금적립금(을)"]
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        names = [row[0] for row in rows]
+        assert "감가상각 부인누계" in names
+        # 감가상각 기말은 denial_end(9,000,000)에 정합
+        dep = next(row for row in rows if row[0] == "감가상각 부인누계")
+        assert dep[4] == 9_000_000
+    finally:
+        os.unlink(out)

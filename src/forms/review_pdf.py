@@ -15,12 +15,61 @@ from pathlib import Path
 from fpdf import FPDF
 
 from src.forms.summary_rows import adjustment_rows, adj_type
+from src.forms.reserve_status import build_reserve_status, reserve_totals
 
 _FONT_REG = Path(r"C:\Windows\Fonts\malgun.ttf")
 _FONT_BOLD = Path(r"C:\Windows\Fonts\malgunbd.ttf")
 
 _GRAY = (236, 236, 241)
 _HEAD = (29, 29, 31)
+
+# 세목별 근거분개 표에 인쇄할 최대 분개 수 (초과분은 앱 CSV 안내) — PDF 분량 관리
+# 500건 이내면 종이 검토용으로 전부 인쇄, 초과 시 금액 상위 500건만 표시
+JOURNAL_LINE_CAP = 500
+
+
+def book_tax_lines(detail: dict) -> list[str]:
+    """calc_details 한 항목 → Book/Tax/계산근거/T·A(소득처분) 표시 줄 (화면·PDF 공용).
+
+    detail: {금액, book, tax, tax_basis, 처분, ...}.
+    book/tax가 None이면 분개 직접집계가 아닌 산식·수기 항목으로 '—' 표시.
+    """
+    book = detail.get("book")
+    tax = detail.get("tax")
+    disp = detail.get("처분") or "검토필요 (귀속자 미정)"
+    out = [
+        f"Book (장부상 금액): {book:,}원" if book is not None else "Book (장부상 금액): —",
+        f"Tax (세무상 금액): {tax:,}원" if tax is not None else "Tax (세무상 금액): —",
+    ]
+    if detail.get("tax_basis"):
+        out.append(f"세무상 금액 계산근거: {detail['tax_basis']}")
+    out.append(f"T/A (세무조정): {detail.get('금액', 0):,}원 · 소득처분 {disp}")
+    return out
+
+
+def _journal_amount(ln) -> int:
+    """분개 라인의 표시 금액 — 차변·대변 중 큰 절대값 (정렬 기준)."""
+    return max(abs(getattr(ln, "debit", 0) or 0), abs(getattr(ln, "credit", 0) or 0))
+
+
+def _journal_rows_for_pdf(lines: list, cap: int = JOURNAL_LINE_CAP) -> list[list[str]]:
+    """근거분개 JournalLine 리스트 → PDF 표 행 (날짜·계정·적요·거래처·차변·대변).
+
+    분개는 금액(차변·대변 중 큰 값) 내림차순으로 정렬한 뒤 cap건까지 인쇄한다 —
+    검토자가 종이로 볼 때 금액이 큰 분개부터 확인할 수 있도록 한다.
+    """
+    rows = []
+    sorted_lines = sorted(lines, key=_journal_amount, reverse=True)
+    for ln in sorted_lines[:cap]:
+        rows.append([
+            str(getattr(ln, "date", "")),
+            (getattr(ln, "account_name", "") or "")[:16],
+            (getattr(ln, "description", "") or "")[:26],
+            (getattr(ln, "counterparty_name", "") or "")[:16],
+            f"{ln.debit:,}" if getattr(ln, "debit", 0) else "",
+            f"{ln.credit:,}" if getattr(ln, "credit", 0) else "",
+        ])
+    return rows
 
 # 항목별 고객 행동 안내 (결정론적 템플릿 — LLM 불필요, 환각 위험 없음)
 ACTION_HINTS = {
@@ -134,6 +183,12 @@ def build_review_pdf(
     client_memo: str,
     risk_fn,                      # assess_risk
     law_check_label: str = "",
+    prior_reserves: list[dict] | None = None,
+    depr_denial_end: int = 0,
+    bad_debt_method: str = "총액법",
+    reserve_decrease_overrides: dict[str, int] | None = None,
+    reserve_manual_rows: list[dict] | None = None,
+    disposition_choices: dict | None = None,
 ) -> bytes:
     fy_label = f"{fy_start} ~ {fy_end}"
     pdf = _ReviewPDF(company_name or "(회사명 미입력)", fy_label)
@@ -167,7 +222,7 @@ def build_review_pdf(
     )
 
     # ── ② 소득금액조정합계표 ─────────────────────────────────────────────────
-    add_items, deduct_items = adjustment_rows(result)
+    add_items, deduct_items = adjustment_rows(result, disposition_choices)
     _h2(pdf, f"2. 소득금액조정합계표 — 가산 {result.total_add_back:,}원 / 차감 {result.total_deduct:,}원")
     rows = []
     for t, k, v, b, d in add_items + deduct_items:
@@ -189,31 +244,93 @@ def build_review_pdf(
         _body_font(pdf)
         pdf.cell(0, 6, "발생한 조정 항목이 없습니다.", new_x="LMARGIN", new_y="NEXT")
 
-    # ── ③ 조정 항목별 계산 근거 ──────────────────────────────────────────────
+    # ── ②-2 자본금과적립금조정명세서(을) — 유보 잔액 명세 ──────────────────────
+    _reserve_rows = build_reserve_status(
+        prior_reserves or [], result, depr_denial_end, bad_debt_method,
+        decrease_overrides=reserve_decrease_overrides, manual_rows=reserve_manual_rows)
+    if _reserve_rows:
+        _rt = reserve_totals(_reserve_rows)
+        _h2(pdf, f"2-2. 자본금과적립금조정명세서(을) — 순유보 기말 {_rt['순유보_기말']:,}원")
+        _res_rows = [
+            [x["과목"], f"{x['기초']:,}", f"{x['증가']:,}", f"{x['감소']:,}",
+             f"{x['기말']:,}", x["처분"], "추인확인" if x["검토"] else ""]
+            for x in _reserve_rows
+        ]
+        _simple_table(
+            pdf, ["과목", "기초", "당기증가", "당기감소", "기말", "처분", "검토"],
+            _res_rows, widths=[28, 15, 15, 15, 15, 9, 13],
+        )
+        if any(x["검토"] for x in _reserve_rows):
+            _body_font(pdf, 7.5)
+            pdf.set_text_color(134, 134, 139)
+            pdf.multi_cell(0, 4,
+                           "※ '추인확인' 항목은 전기 유보가 있으나 당기 추인(감소)이 자동 반영되지 않았습니다 — "
+                           "환입·추인 여부를 확인해 당기 감소를 보정하세요.",
+                           new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_HEAD)
+
+    # ── ③ 세목별 세무조정 (Book / Tax / 세무조정·소득처분 + 근거분개) ────────────
     pdf.add_page()
-    _h2(pdf, "3. 조정 항목별 계산 근거 (산식·판정 사유)")
-    for name, d in (calc_details or {}).items():
-        if name.startswith("(참고)"):
-            continue
-        _body_font(pdf, 9, bold=True)
-        pdf.multi_cell(0, 5.5, f"■ {name} — {d.get('금액', 0):,}원  [{d.get('법령', '')}]",
+    _h2(pdf, "3. 세목별 세무조정 — Book / Tax / 세무상 금액 계산근거 / T·A·소득처분 + 근거분개")
+    _items = [(n, d) for n, d in (calc_details or {}).items() if not n.startswith("(참고)")]
+    for _idx, (name, d) in enumerate(_items):
+        _body_font(pdf, 9.5, bold=True)
+        pdf.multi_cell(0, 5.5, f"■ {name}  [{d.get('법령', '')}]",
                        new_x="LMARGIN", new_y="NEXT")
+        # 판정 사유 (왜 자동조정 되었나)
         if d.get("사유"):
             _body_font(pdf, 8)
             pdf.set_text_color(0, 90, 180)
             pdf.multi_cell(0, 4.5, f"  사유: {d['사유']}", new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(*_HEAD)
-        _body_font(pdf, 8)
-        for f_line in d.get("산식", []):
-            if f_line:
-                pdf.multi_cell(0, 4.5, f"  · {f_line}", new_x="LMARGIN", new_y="NEXT")
-        n_lines = len(d.get("lines") or [])
-        if n_lines:
-            pdf.set_text_color(134, 134, 139)
-            pdf.multi_cell(0, 4.5, f"  근거 분개 {n_lines:,}건 — 앱 5단계 드릴다운·CSV 참조",
-                           new_x="LMARGIN", new_y="NEXT")
+        # Book / Tax / 세무상 금액 계산근거 / T·A · 소득처분
+        _body_font(pdf, 8.5)
+        for _l in book_tax_lines(d):
+            pdf.multi_cell(0, 4.8, f"  {_l}", new_x="LMARGIN", new_y="NEXT")
+        # 세무상 금액 산정 상세 (산식)
+        _detail_formula = [f for f in (d.get("산식") or []) if f]
+        if _detail_formula:
+            _body_font(pdf, 7.5)
+            pdf.set_text_color(110, 110, 115)
+            for f_line in _detail_formula:
+                pdf.multi_cell(0, 4.2, f"     - {f_line}", new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(*_HEAD)
-        pdf.ln(1.5)
+        # 근거분개 — 실제 분개 내역
+        _lines = d.get("lines") or []
+        if _lines:
+            _body_font(pdf, 8, bold=True)
+            pdf.multi_cell(0, 4.8, f"  근거분개 ({len(_lines):,}건):",
+                           new_x="LMARGIN", new_y="NEXT")
+            _simple_table(
+                pdf, ["날짜", "계정과목", "적요", "거래처", "차변", "대변"],
+                _journal_rows_for_pdf(_lines), widths=[14, 22, 30, 20, 17, 17], size=7.0,
+            )
+            if len(_lines) > JOURNAL_LINE_CAP:
+                _body_font(pdf, 7.0)
+                pdf.set_text_color(134, 134, 139)
+                pdf.multi_cell(
+                    0, 4.0,
+                    f"  ※ 전체 {len(_lines):,}건 중 금액 상위 {JOURNAL_LINE_CAP}건만 표시 — "
+                    "전체 분개는 앱 5단계 'CSV 다운로드' 참조",
+                    new_x="LMARGIN", new_y="NEXT")
+                pdf.set_text_color(*_HEAD)
+        else:
+            _body_font(pdf, 7.5)
+            pdf.set_text_color(134, 134, 139)
+            pdf.multi_cell(
+                0, 4.2,
+                "  근거분개: 분개장 직접 집계가 아닌 수기 입력·산식 기반 항목 "
+                "(근거는 앱 3단계 입력 화면 참조)",
+                new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_HEAD)
+        # 세목 구분선 (다음 세목)
+        if _idx < len(_items) - 1:
+            pdf.ln(1.5)
+            pdf.set_draw_color(205, 205, 212)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+            pdf.ln(2.5)
+        else:
+            pdf.ln(2)
 
     # ── ④ 전수 검토 체크리스트 ───────────────────────────────────────────────
     pdf.add_page()

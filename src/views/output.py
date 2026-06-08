@@ -10,6 +10,7 @@ from src.forms.registry import recommend_forms
 from src.forms.audit_trail import generate_audit_trail
 from src.llm.ollama_client import OllamaClient
 from src.ui.styles import page_header, section_title, info_card
+from src.utils.safe_export import safe_filename
 from src.views.common import _parse_stored_date
 
 
@@ -91,6 +92,12 @@ def render(proj) -> None:
                         client_memo=_memo,
                         risk_fn=assess_risk,
                         law_check_label=legal_basis.LAST_LAW_FETCH_OK,
+                        prior_reserves=proj.manual_input.prior_reserves,
+                        depr_denial_end=int((proj.tax_adjustments or {}).get("depreciation_denial_end", 0)),
+                        bad_debt_method=proj.manual_input.bad_debt_method,
+                        reserve_decrease_overrides=(proj.tax_adjustments or {}).get("reserve_decrease_overrides", {}),
+                        reserve_manual_rows=(proj.tax_adjustments or {}).get("reserve_manual_rows", []),
+                        disposition_choices=(proj.tax_adjustments or {}).get("disposition_choices", {}),
                     )
                 except FileNotFoundError as e:
                     st.error(f"PDF 생성 실패 — 한글 폰트를 찾지 못했습니다: {e}")
@@ -111,7 +118,7 @@ def render(proj) -> None:
                 st.download_button(
                     "다운로드 — 검토패키지 PDF",
                     data=_pdf_bytes,
-                    file_name=f"세무조정검토패키지_{proj.company.name}_{proj.company.fiscal_year_end}.pdf",
+                    file_name=f"세무조정검토패키지_{safe_filename(proj.company.name)}_{proj.company.fiscal_year_end}.pdf",
                     mime="application/pdf",
                     use_container_width=True,
                 )
@@ -141,6 +148,12 @@ def render(proj) -> None:
                     model_name=OllamaClient().model,
                     rule_engine_version="0.1.0",
                     law_ref_date=_parse_stored_date(proj.company.fiscal_year_end, date.today()),
+                    prior_reserves=proj.manual_input.prior_reserves,
+                    depr_denial_end=int((proj.tax_adjustments or {}).get("depreciation_denial_end", 0)),
+                    bad_debt_method=proj.manual_input.bad_debt_method,
+                    reserve_decrease_overrides=(proj.tax_adjustments or {}).get("reserve_decrease_overrides", {}),
+                    reserve_manual_rows=(proj.tax_adjustments or {}).get("reserve_manual_rows", []),
+                    disposition_choices=(proj.tax_adjustments or {}).get("disposition_choices", {}),
                 )
                 with open(out_path, "rb") as f:
                     _audit_bytes = f.read()
@@ -153,7 +166,7 @@ def render(proj) -> None:
                 "다운로드 — 감사추적 Excel",
                 data=_audit_bytes,
                 file_name=(
-                    f"감사추적_{proj.company.name}"
+                    f"감사추적_{safe_filename(proj.company.name)}"
                     f"_{proj.company.fiscal_year_end}.xlsx"
                 ),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -186,7 +199,7 @@ def render(proj) -> None:
                 "다운로드 — .taxproj",
                 data=_proj_bytes,
                 file_name=(
-                    f"{proj.company.name}"
+                    f"{safe_filename(proj.company.name)}"
                     f"_{proj.company.fiscal_year_end}.taxproj"
                 ),
                 mime="application/json",

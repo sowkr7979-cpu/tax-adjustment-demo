@@ -26,3 +26,9 @@ verify_form_list.txt
 *.xls
 *.xlsx
 *.hwp
+*.hwpx
+*.taxproj
+
+# 루트 작업 중간 산출물 (법령 덤프·임시 추출물)
+_*.txt
+_*.json

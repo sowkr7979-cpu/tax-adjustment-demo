@@ -7,3 +7,11 @@ font = "sans serif"
 
 [browser]
 gatherUsageStats = false
+
+[server]
+# 로컬 전용 — 동일 네트워크의 타 기기에서 고객 재무자료 화면 접근 차단
+address = "127.0.0.1"
+headless = true
+enableXsrfProtection = true
+enableCORS = true
+maxUploadSize = 200

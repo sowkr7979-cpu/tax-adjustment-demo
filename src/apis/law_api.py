@@ -7,7 +7,7 @@ from typing import Any
 import requests
 
 
-BASE_URL = "http://www.law.go.kr/DRF"
+BASE_URL = "https://www.law.go.kr/DRF"  # 평문 HTTP → HTTPS (응답 무결성·OC키 보호)
 
 
 def _collect_article_text(node: Any) -> list[str]:

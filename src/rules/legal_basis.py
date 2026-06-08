@@ -16,6 +16,8 @@ LAW_CORP_TAX_DECREE = "003608"   # 법인세법 시행령
 LAW_CORP_TAX_RULE = "007229"     # 법인세법 시행규칙
 LAW_SPECIAL_TAX = "001584"       # 조세특례제한법
 LAW_SPECIAL_TAX_DECREE = "004920"  # 조세특례제한법 시행령
+LAW_FARM_SURTAX = "001569"       # 농어촌특별세법
+LAW_NATIONAL_TAX_BASIC = "001586"  # 국세기본법
 
 # TaxAdjustmentResult 필드명 → (표시명, 법령ID, 조문번호 JO 6자리)
 # JO: 조번호 4자리 + 가지번호 2자리 (제18조의2 → "001802")
@@ -28,8 +30,10 @@ ADJUSTMENT_LEGAL_BASIS: dict[str, tuple[str, str, str]] = {
     "pension_excess":            ("법인세법 제33조 (퇴직급여충당금의 손금산입)",       LAW_CORP_TAX,        "003300"),
     "bad_debt_excess":           ("법인세법 제34조 (대손충당금의 손금산입)",          LAW_CORP_TAX,        "003400"),
     "penalty":                   ("법인세법 제21조 (세금과 공과금의 손금불산입)",      LAW_CORP_TAX,        "002100"),
-    "interest_unknown_creditor": ("법인세법 제28조 (지급이자의 손금불산입)",          LAW_CORP_TAX,        "002800"),
+    "interest_unknown_creditor": ("법인세법 제28조제1항제1호 (채권자불분명 사채이자)", LAW_CORP_TAX,        "002800"),
+    "interest_nonreal_name":     ("법인세법 제28조제1항제2호 (비실명 채권·증권의 이자)", LAW_CORP_TAX,       "002800"),
     "vehicle_disallowed":        ("법인세법 제27조의2 (업무용승용차 관련비용)",        LAW_CORP_TAX,        "002702"),
+    "vehicle_depr_excess":       ("법인세법 제27조의2제3항 (승용차 감가상각비 한도초과·이월)", LAW_CORP_TAX,    "002702"),
     "officer_bonus_excess":      ("법인세법 제26조 (과다경비 등의 손금불산입)",        LAW_CORP_TAX,        "002600"),
     "officer_retirement_excess": ("법인세법 시행령 제44조 (퇴직급여의 손금불산입)",     LAW_CORP_TAX_DECREE, "004400"),
     "interest_construction":     ("법인세법 제28조 (지급이자의 손금불산입)",          LAW_CORP_TAX,        "002800"),
@@ -52,6 +56,13 @@ ADJUSTMENT_LEGAL_BASIS: dict[str, tuple[str, str, str]] = {
     # ── 차감조정 (손금산입·익금불산입) ──
     "depreciation_approved":     ("법인세법 제23조 (전기 부인액 추인)",               LAW_CORP_TAX,        "002300"),
     "dividend_exclusion":        ("법인세법 제18조의2 (수입배당금액의 익금불산입)",    LAW_CORP_TAX,        "001802"),
+    "debt_relief_offset":        ("법인세법 제18조제6호 (자산수증익·채무면제익 중 이월결손금 보전 충당액 익금불산입)", LAW_CORP_TAX, "001800"),
+    "refund_interest_excluded":  ("법인세법 제18조제4호 (국세·지방세 과오납 환급금 이자 익금불산입)", LAW_CORP_TAX, "001800"),
+    "vat_output_excluded":       ("법인세법 제18조제5호 (부가가치세 매출세액 익금불산입)", LAW_CORP_TAX, "001800"),
+    # ── 세액 (산출세액 이후) ──
+    "farm_surtax":               ("농어촌특별세법 제5조 (과세표준과 세율 — 감면세액 20%)", LAW_FARM_SURTAX, "000500"),
+    "land_transfer_tax":         ("법인세법 제55조의2 (토지등 양도소득에 대한 법인세)", LAW_CORP_TAX, "005502"),
+    "surtax":                    ("국세기본법 제47조의2~4 (무신고·과소신고·납부지연 가산세)", LAW_NATIONAL_TAX_BASIC, "004702"),
     "pension_deduction":         ("법인세법 시행령 제44조의2 (퇴직연금 부담금 손금산입)", LAW_CORP_TAX_DECREE, "004402"),
 }
 

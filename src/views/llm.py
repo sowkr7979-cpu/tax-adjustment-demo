@@ -1,4 +1,4 @@
-"""4단계 — LLM 분석 (1차 규칙 분류 + 선택적 2차 정밀 분석)."""
+"""4단계 — AI 검토 보조 (규칙 기반 검토 큐 + 선택적 LLM 메모 보조)."""
 from __future__ import annotations
 import threading
 import time
@@ -12,14 +12,15 @@ from src.llm.ollama_client import OllamaClient
 from src.llm.analyzer import JournalAnalyzer
 from src.ui.styles import page_header, section_title, info_card, striped_by_group
 from src.utils.models import issue_label
+from src.utils.safe_export import safe_df
 from src.views.common import _parse_stored_date
 
 
 def render(proj, llm_ok: bool) -> None:
     st.markdown(page_header(
-        "LLM 2차 정밀 분석 (선택)",
+        "AI 검토 보조 (선택)",
         "이 단계는 선택입니다 — 세무조정 계산(5단계)은 LLM 없이 규칙 엔진만으로 완료됩니다. "
-        "LLM은 규칙이 판단하기 애매한 분개의 검토 보조용입니다. (CPU 추론 — 분개 1건당 약 1분 소요)",
+        "LLM은 대량 분개 판단용이 아니라 검토 큐 요약·자료요청·검토메모 초안 작성용입니다.",
     ), unsafe_allow_html=True)
 
     loader: SmartALoader = st.session_state.loader
@@ -131,7 +132,7 @@ def render(proj, llm_ok: bool) -> None:
             ])
             st.download_button(
                 "이 분류 내역 전체 CSV 다운로드",
-                data=_rcsv_df.to_csv(index=False).encode("utf-8-sig"),
+                data=safe_df(_rcsv_df).to_csv(index=False).encode("utf-8-sig"),
                 file_name=f"1차분류_{_issue_keys[_isel]}.csv",
                 mime="text/csv",
                 key="rule_drill_csv",
@@ -140,8 +141,8 @@ def render(proj, llm_ok: bool) -> None:
     st.divider()
 
     st.markdown(section_title(
-        "2단계 — LLM 정밀 분석",
-        "Ollama 로컬 LLM으로 선별된 분개를 세법 관점에서 판단합니다.",
+        "2단계 — 선택 거래 메모 보조",
+        "Ollama 로컬 LLM으로 회계사가 고른 소수 검토 큐만 요약·메모화합니다.",
     ), unsafe_allow_html=True)
 
     if not llm_ok:
@@ -164,28 +165,37 @@ def render(proj, llm_ok: bool) -> None:
     if _stage2_by_issue:
         _opts = sorted(_stage2_by_issue, key=lambda c: -_stage2_by_issue[c])
         _picked = st.multiselect(
-            "LLM 분석할 이슈 분류 선택 (기본: 전체) — 건수가 많으면 필요한 분류만 선택하세요",
+            "AI 보조를 실행할 이슈 분류 선택 — 기본 미선택, 필요한 분류만 고르세요",
             options=_opts,
-            default=_opts,
+            default=[],
             format_func=lambda c: f"{issue_label(c)} — {_stage2_by_issue[c]:,}건",
             key="llm_issue_pick",
         )
         _selected_issues = set(_picked)
         _sel_cnt = sum(_stage2_by_issue[c] for c in _picked)
         _est_min = _sel_cnt  # CPU 추론 실측 약 1건/분
+        _too_many = _sel_cnt > 50
         st.caption(
             f"선택된 분석 대상 **{_sel_cnt:,}건** · 예상 소요 약 {_est_min // 60}시간 {_est_min % 60}분 "
-            f"(gemma4 CPU 기준 1건당 약 1분)"
+            f"(gemma4 CPU 기준 1건당 약 1분, 권장 50건 이하)"
         )
+        if _too_many:
+            st.warning(
+                "선택 대상이 50건을 초과합니다. 로컬 LLM은 대량 분석에 부적합하므로 "
+                "금액 상위 거래나 특정 이슈만 좁혀서 실행하세요."
+            )
+    else:
+        _too_many = False
 
     col_r2, _ = st.columns([1, 4])
     with col_r2:
         run_llm = st.button(
-            "2차 LLM 분석 실행" if not _job_running else "분석 실행 중...",
+            "선택 큐 AI 보조 실행" if not _job_running else "분석 실행 중...",
             use_container_width=True,
             disabled=(
                 "rule_results" not in st.session_state or not llm_ok or _job_running
                 or (_selected_issues is not None and not _selected_issues)
+                or _too_many
             ),
         )
 
@@ -235,12 +245,12 @@ def render(proj, llm_ok: bool) -> None:
             if _total:
                 st.progress(
                     min(_job["done"] / _total, 1.0),
-                    text=f"LLM 분석 진행 중... {_job['done']:,}/{_total:,}건 "
+                    text=f"AI 보조 진행 중... {_job['done']:,}/{_total:,}건 "
                          f"(경과 {_elapsed // 60}분 {_elapsed % 60}초) — "
                          f"다른 페이지로 이동해도 분석은 계속됩니다",
                 )
             else:
-                st.progress(0.0, text="LLM 분석 준비 중... (첫 배치 처리 중)")
+                st.progress(0.0, text="AI 보조 준비 중... (첫 배치 처리 중)")
             _c1, _c2 = st.columns([1, 3])
             if _c1.button("진행 상황 새로고침"):
                 st.rerun()
@@ -248,7 +258,7 @@ def render(proj, llm_ok: bool) -> None:
                 time.sleep(10)
                 st.rerun()
         elif _job["status"] == "error":
-            st.error(f"LLM 분석 오류: {_job['error']}")
+            st.error(f"AI 보조 오류: {_job['error']}")
             if st.button("오류 확인 (닫기)"):
                 st.session_state.llm_job = None
                 st.rerun()
@@ -257,10 +267,10 @@ def render(proj, llm_ok: bool) -> None:
             st.session_state.llm_results = _res
             st.session_state.llm_job = None
             if _res:
-                st.success(f"LLM 분석 완료 — {len(_res):,}건 처리됨")
+                st.success(f"AI 보조 완료 — {len(_res):,}건 처리됨")
             else:
                 st.warning(
-                    "LLM 분석이 완료되었으나 유효한 결과가 없습니다. "
+                    "AI 보조가 완료되었으나 유효한 결과가 없습니다. "
                     "모델 응답이 JSON 형식이 아니거나 컨텍스트 한계를 초과했을 수 있습니다."
                 )
 

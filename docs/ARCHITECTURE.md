@@ -44,7 +44,7 @@ tests/
 |------|----------|----------|
 | 파일 표준화 (포맷 스니핑·인코딩·헤더 탐지·음수 표기) | `src/parsers/normalizer.py` | 2단계 진단 리포트 |
 | 더존/WEHAGO 파싱 (분개장·재무제표·고정자산 소계 역부여) | `src/parsers/smart_a.py` | 2단계 |
-| 전기 재무제표 (증감분석·기초잔액 대사용 별도 로더) | `src/views/upload.py` (`prev_loader` 세션) | 2단계 하단 |
+| 전기 자료 (증감분석·기초잔액 대사용 별도 로더 — B/S·P&L·원가명세서·고정자산·분개장·원장·잔액명세서 7종) | `src/views/upload.py` (`prev_loader` 세션) | 2단계 하단 |
 | 전년도 .taxproj 승계 (유보·결손금·판단자료) | `src/project/taxproj.py` `carry_forward_from` | 3단계 상단 |
 | 분개장 1-pass 집계 (+특수관계인 매출) | `src/rules/aggregator.py` | 5단계 |
 | 적수(積數) — B/S 기초 + 분개 증감 일별 계산 | `src/rules/jeoksu.py` | 5단계 계산 내역 |

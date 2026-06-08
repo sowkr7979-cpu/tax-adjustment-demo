@@ -46,6 +46,35 @@ def test_non_business_ratio():
     assert r.non_business_disallowed == int(20_000_000 * 0.3)
 
 
+def test_nonreal_name_interest_full_disallowed():
+    """비실명 채권·증권이자(법§28①2호) 전액 손금불산입 — 1호와 별개 독립 항목."""
+    r = calc_interest_disallowance(
+        total_interest=10_000_000,
+        unknown_creditor_interest=0,
+        nonreal_name_interest=1_500_000,
+        construction_interest=0,
+        non_business_asset=0,
+        total_asset=100_000_000,
+    )
+    assert r.nonreal_name_disallowed == 1_500_000
+    assert r.total_disallowed == 1_500_000
+
+
+def test_nonreal_name_excluded_from_4ho_base():
+    """4호 업무무관자산 기준이자 = 총이자 − 1호 − 2호 − 3호 (2호도 차감)."""
+    r = calc_interest_disallowance(
+        total_interest=10_000_000,
+        unknown_creditor_interest=1_000_000,
+        nonreal_name_interest=2_000_000,
+        construction_interest=1_000_000,
+        non_business_asset=20_000_000,
+        total_asset=100_000_000,
+    )
+    # 기준이자 = 10M − 1M − 2M − 1M = 6M, 비율 0.2 → 4호 = 1.2M
+    assert r.non_business_disallowed == int(6_000_000 * 0.2)
+    assert r.total_disallowed == 1_000_000 + 2_000_000 + 1_000_000 + int(6_000_000 * 0.2)
+
+
 # ── 업무용승용차 ─────────────────────────────────────────────────────────────
 
 def test_no_insurance_full_disallowed():

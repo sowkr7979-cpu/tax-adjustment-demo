@@ -64,16 +64,36 @@ def get_min_tax_rate(tax_base: int, is_sme: bool) -> float:
     return 0.17
 
 
-# 당좌대출이자율 (국세청 고시 — 매년 갱신)
+# 당좌대출이자율 (국세청 고시 — 매년 갱신, 규칙§43②: 현행 연 1,000분의 46 = 4.6%)
 PRIME_RATE_BY_YEAR: dict[int, float] = {
     2023: 0.046,
     2024: 0.046,
     2025: 0.046,
 }
+_PRIME_RATE_DEFAULT = 0.046
+
+
+def is_prime_rate_published(fiscal_year: int) -> bool:
+    """해당 사업연도의 당좌대출이자율 고시값이 테이블에 등록되어 있는지."""
+    return fiscal_year in PRIME_RATE_BY_YEAR
+
 
 def get_prime_rate(fiscal_year: int) -> float:
-    return PRIME_RATE_BY_YEAR.get(fiscal_year, 0.046)
+    """당좌대출이자율. 미등록 연도는 최근 등록 연도값으로 폴백(고시 확인 필요).
 
+    고시 변경 모니터링 누락 방지를 위해 등록 여부는 is_prime_rate_published()로 확인.
+    """
+    if fiscal_year in PRIME_RATE_BY_YEAR:
+        return PRIME_RATE_BY_YEAR[fiscal_year]
+    # 미등록 → 가장 가까운(최근) 등록 연도값 폴백
+    if PRIME_RATE_BY_YEAR:
+        _nearest = min(PRIME_RATE_BY_YEAR, key=lambda y: abs(y - fiscal_year))
+        return PRIME_RATE_BY_YEAR[_nearest]
+    return _PRIME_RATE_DEFAULT
+
+
+# 농어촌특별세율 — 조특법 감면세액분 (농특세법§5① 1호)
+FARM_SURTAX_RATE = 0.20
 
 # 기업업무추진비 기본한도
 ENTERTAINMENT_BASE_SME = 36_000_000

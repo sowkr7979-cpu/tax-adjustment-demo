@@ -9,7 +9,14 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
 from src.utils.models import LLMAnalysisResult, TaxAdjustmentResult
+from src.utils.safe_export import sanitize_cell
 from src.forms.summary_rows import adjustment_rows
+from src.forms.reserve_status import build_reserve_status, reserve_totals
+
+
+def _safe_append(ws, row: list) -> None:
+    """수식 인젝션 방어 — 신뢰불가 셀의 위험 선두문자 무력화 후 기록."""
+    ws.append([sanitize_cell(c) for c in row])
 
 
 def _header_style(ws, row: int, headers: list[str]) -> None:
@@ -31,6 +38,12 @@ def generate_audit_trail(
     model_name: str,
     rule_engine_version: str,
     law_ref_date: date,
+    prior_reserves: list[dict] | None = None,
+    depr_denial_end: int = 0,
+    bad_debt_method: str = "총액법",
+    reserve_decrease_overrides: dict[str, int] | None = None,
+    reserve_manual_rows: list[dict] | None = None,
+    disposition_choices: dict | None = None,
 ) -> None:
     wb = Workbook()
 
@@ -49,7 +62,7 @@ def generate_audit_trail(
             for b in r.legal_basis_candidates
         )
         forms = "; ".join(r.target_form_candidates)
-        ws1.append([
+        _safe_append(ws1, [
             r.journal_id, r.line_id,
             "가능" if r.issue_possible else "없음",
             r.tax_issue_code.value,
@@ -66,16 +79,35 @@ def generate_audit_trail(
     ws2 = wb.create_sheet("세무조정계산근거")
     headers2 = ["구분", "항목", "금액(원)", "근거법령", "소득처분"]
     _header_style(ws2, 1, headers2)
-    add_items, deduct_items = adjustment_rows(tax_result)
+    add_items, deduct_items = adjustment_rows(tax_result, disposition_choices)
     # 가산조정은 금액 양수, 차감조정(손금산입·익금불산입)은 음수로 표기. 0원 항목은 제외.
     for gubun, name, amount, basis, disposition in add_items:
         if amount:
-            ws2.append([gubun, name, amount, basis, disposition])
+            _safe_append(ws2, [gubun, name, amount, basis, disposition])
     for gubun, name, amount, basis, disposition in deduct_items:
         if amount:
-            ws2.append([gubun, name, -amount, basis, disposition])
+            _safe_append(ws2, [gubun, name, -amount, basis, disposition])
 
-    # ── 시트3: 세액 계산 근거 ────────────────────────────────────────────────
+    # ── 시트3: 자본금과적립금조정명세서(을) — 유보 잔액 명세 ──────────────────
+    ws_res = wb.create_sheet("자본금적립금(을)")
+    headers_res = ["과목", "기초잔액", "당기증가", "당기감소", "기말잔액", "처분", "검토"]
+    _header_style(ws_res, 1, headers_res)
+    _reserve_rows = build_reserve_status(
+        prior_reserves or [], tax_result, depr_denial_end, bad_debt_method,
+        decrease_overrides=reserve_decrease_overrides, manual_rows=reserve_manual_rows)
+    for x in _reserve_rows:
+        _safe_append(ws_res, [
+            x["과목"], x["기초"], x["증가"], x["감소"], x["기말"],
+            x["처분"], "추인확인" if x["검토"] else "",
+        ])
+    if _reserve_rows:
+        _rt = reserve_totals(_reserve_rows)
+        ws_res.append([])
+        _safe_append(ws_res, ["유보 기말 합계", "", "", "", _rt["유보_기말"], "유보", ""])
+        _safe_append(ws_res, ["△유보 기말 합계", "", "", "", _rt["△유보_기말"], "△유보", ""])
+        _safe_append(ws_res, ["순유보 기말", "", "", "", _rt["순유보_기말"], "", ""])
+
+    # ── 시트4: 세액 계산 근거 ────────────────────────────────────────────────
     ws3 = wb.create_sheet("세액계산근거")
     headers3 = ["항목", "금액(원)"]
     _header_style(ws3, 1, headers3)
@@ -92,10 +124,10 @@ def generate_audit_trail(
         ("차감납부세액", tax_result.final_tax_due),
     ]
     for row in rows3:
-        ws3.append(list(row))
+        _safe_append(ws3, list(row))
 
     # 열 너비 자동 조정
-    for ws in [ws1, ws2, ws3]:
+    for ws in [ws1, ws2, ws_res, ws3]:
         for col in ws.columns:
             max_len = max((len(str(c.value or "")) for c in col), default=10)
             ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 4, 40)

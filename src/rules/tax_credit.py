@@ -1,5 +1,5 @@
 """세액공제·감면 + 최저한세 계산 — 조세특례제한법 제132조."""
-from src.utils.constants import get_min_tax_rate
+from src.utils.constants import get_min_tax_rate, FARM_SURTAX_RATE
 from src.utils.models import TaxCredit
 
 
@@ -18,6 +18,10 @@ def calc_final_tax(
     2. 감면후세액 < 최저한세액 → 초과분 감면 배제
     3. 최저한세 미적용 감면 추가 차감 (§132 제외 항목)
     4. 가산세 가산, 기납부세액 차감
+
+    농어촌특별세(농특세법§5①): 농특세 과세대상 감면세액(farm_surtax_taxable=True) × 20%.
+      배제된 감면은 실제 감면받지 못한 것이므로 농특세 과세표준에서 제외한다.
+      농특세는 법인세와 별도로 신고·납부하므로 차감납부세액에 포함하지 않는다.
     """
     min_credits = sum(c.amount for c in tax_credits if c.subject_to_min_tax)
     post_credits = sum(c.amount for c in tax_credits if not c.subject_to_min_tax)
@@ -36,6 +40,12 @@ def calc_final_tax(
     final_tax = max(0, after_min - post_credits)
     final_due = max(0, final_tax + surtax - prepaid_tax)
 
+    # 농어촌특별세 — 실제 감면된 농특세 과세대상 세액 기준 (배제분 제외)
+    farm_taxable_credits = sum(
+        c.amount for c in tax_credits if c.farm_surtax_taxable
+    )
+    farm_surtax = int(max(0, farm_taxable_credits - excluded) * FARM_SURTAX_RATE)
+
     return {
         "산출세액": gross_tax,
         "최저한세_적용_감면합계": min_credits,
@@ -47,4 +57,5 @@ def calc_final_tax(
         "가산세": surtax,
         "기납부세액": prepaid_tax,
         "차감납부세액": final_due,
+        "농어촌특별세": farm_surtax,
     }

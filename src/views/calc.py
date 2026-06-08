@@ -12,24 +12,31 @@ from src.rules.donation import calc_donation
 from src.rules.allowances import (
     calc_bad_debt_allowance, calc_retirement_allowance, calc_pension_deduction,
 )
-from src.rules.income_items import calc_deemed_interest_by_party, calc_deemed_rental
-from src.rules.jeoksu import jeoksu_from_deltas, account_jeoksu, fy_days
+from src.rules.income_items import (
+    calc_deemed_interest_by_party, calc_deemed_rental, calc_debt_relief_offset,
+)
+from src.rules.jeoksu import jeoksu_from_deltas, account_jeoksu, fy_days, lines_to_deltas
 from src.rules.dividend import calc_dividend_exclusion
 from src.rules.legal_basis import ADJUSTMENT_LEGAL_BASIS, fetch_legal_text
 import src.rules.legal_basis as legal_basis
 from src.rules.data_requests import build_data_requests, assess_risk
 from src.rules.yoy_analysis import yoy_table, yoy_flags, bs_opening_check
 from src.forms.summary_rows import adjustment_rows, adj_type
+from src.forms.reserve_status import build_reserve_status, reserve_totals
+from src.rules.disposition import ATTRIBUTION_TYPES
+from src.rules.consulting import build_consulting_topics
 from src.rules.coverage import run_coverage_check
 from src.rules.other_adjustments import (
     calc_penalty, calc_officer_bonus_excess, calc_officer_retirement_excess,
 )
 from src.rules.vehicle import calc_vehicle
-from src.rules.tax_base import compute_all, eligible_carryforward_total
+from src.rules.tax_base import compute_all, eligible_carryforward_total, calc_land_transfer_tax
 from src.utils.constants import (
-    get_prime_rate, LOSS_CARRYFORWARD_SME_RATE, LOSS_CARRYFORWARD_GENERAL_RATE,
+    get_prime_rate, is_prime_rate_published,
+    LOSS_CARRYFORWARD_SME_RATE, LOSS_CARRYFORWARD_GENERAL_RATE,
 )
-from src.utils.models import TaxAdjustmentResult
+from src.utils.safe_export import safe_df
+from src.utils.models import TaxAdjustmentResult, TaxCredit
 from src.ui.manual_input import _bs_amount, _bs_amount_detail
 from src.ui.styles import page_header, section_title, striped_by_group
 from src.views.common import _parse_stored_date
@@ -116,13 +123,21 @@ def render(proj) -> None:
                 # 계산 내역 (산식·분개장 근거) — 항목 선택 드릴다운용
                 calc_details: dict[str, dict] = {}
 
-                def _add_detail(name, amount, basis, formula, lines=None, reason=""):
-                    """reason: '왜' 이 조정이 자동 발생했는지 — 판정 트리거(데이터 출처 + 조건)."""
+                def _add_detail(name, amount, basis, formula, lines=None, reason="",
+                                book=None, tax=None, tax_basis="", disposition=""):
+                    """reason: '왜' 이 조정이 자동 발생했는지 — 판정 트리거(데이터 출처 + 조건).
+
+                    book/tax: 장부상 금액·세무상 금액 (검토패키지 Book/Tax 표시용).
+                    둘 다 None이면 분개 직접집계가 아닌 산식·수기 항목으로 '—' 표시된다.
+                    tax_basis: 세무상 금액 산정 근거(요약). disposition: 소득처분 후보(영§106).
+                    """
                     if amount:
                         calc_details[name] = {
                             "금액": amount, "법령": basis,
                             "산식": formula, "lines": lines or [],
                             "사유": reason,
+                            "book": book, "tax": tax,
+                            "tax_basis": tax_basis, "처분": disposition,
                         }
 
                 revenue = (
@@ -130,6 +145,10 @@ def render(proj) -> None:
                     or loader.get_amount_by_name(("매출액",))
                     or agg.revenue
                 )
+                # 수입금액 수기 보정 (영§42① 기업회계기준 매출액) — 파서가 매출을
+                # 누락·오분류한 경우만. 입력값(>0)이 있으면 우선. 기업업무추진비 한도 분모.
+                if int(getattr(mi, "revenue_manual", 0) or 0) > 0:
+                    revenue = int(mi.revenue_manual)
                 # 특수관계인 거래 수입금액 — 매출 분개의 거래처를 특수관계인 목록과 대조
                 _rp_kw = [
                     str(rp).split("(")[0].strip()
@@ -184,6 +203,12 @@ def render(proj) -> None:
                                + (f". 특수관계인 매출 {ent.related_revenue:,}원은 1단계 특수관계인 "
                                   f"목록과 매출 분개 거래처 대조로 자동 집계되어 한도 축소에 반영됨"
                                   if ent.related_revenue > 0 else ""),
+                        book=ent.total_expense - ent.no_receipt_disallowed,
+                        tax=ent.total_limit,
+                        tax_basis=(f"기본한도 {ent.base_limit:,}원 + 수입금액한도 {ent.revenue_limit:,}원"
+                                   + ("의 50%(특정법인)" if is_spec else "")
+                                   + f" = 손금인정 한도 {ent.total_limit:,}원 (법§25④)"),
+                        disposition="기타사외유출",
                     )
                     if rp_revenue > 0:
                         _add_detail(
@@ -203,6 +228,9 @@ def render(proj) -> None:
                         agg.entertainment.no_receipt_lines,
                         reason="분개장의 증빙구분·카드번호 칸 기준으로 건당 3만원 초과인데 적격증빙이 "
                                "확인되지 않는 건만 추출 (카드번호가 있으면 증빙불비로 보지 않음)",
+                        book=ent.no_receipt_disallowed, tax=0,
+                        tax_basis="건당 3만원 초과 + 적격증빙 미수취 → 손금 불인정 (법§25②, 전액)",
+                        disposition="기타사외유출",
                     )
 
                 result.penalty = calc_penalty(agg.penalty.total)
@@ -212,6 +240,9 @@ def render(proj) -> None:
                     agg.penalty.lines,
                     reason="분개장에서 벌과금 계정(8391) 또는 계정명·적요에 벌과금·과태료·가산세·범칙금이 "
                            "있는 분개 발견 → 법§21 3호에 따라 조건 없이 전액 손금불산입",
+                    book=result.penalty, tax=0,
+                    tax_basis="벌과금·과태료·가산세는 손금 불인정 (법§21 3호, 전액)",
+                    disposition="기타사외유출",
                 )
 
                 # ── 익금산입: 가지급금 인정이자 — 거래상대방별 적수(積數) 계산 ──
@@ -221,6 +252,13 @@ def render(proj) -> None:
                     "가중평균차입이자율 (영§89③ 원칙)" if mi.related_loan_rate > 0
                     else "당좌대출이자율 (가중평균이자율 미입력 — 영§89③ 단서)"
                 )
+                # 미고시 연도 당좌대출이자율 폴백 경고 (고시 변경 모니터링 누락 방지)
+                if mi.related_loan_rate == 0 and not is_prime_rate_published(fy_end_val.year):
+                    st.warning(
+                        f"⚠ {fy_end_val.year}년 당좌대출이자율 고시값이 등록돼 있지 않아 "
+                        f"인접 연도값({_rate:.1%})을 적용했습니다 — 국세청 고시(규칙§43②)를 확인해 "
+                        "constants.PRIME_RATE_BY_YEAR을 갱신하세요."
+                    )
                 _loan_checks = (mi.misc_line_checks or {}).get("related_loan_lines", {})
                 _loan_lines = [
                     ln for ln in loader.journals
@@ -248,28 +286,49 @@ def render(proj) -> None:
                     if cp in _party_deltas:
                         _actual_by_cp[cp] = _actual_by_cp.get(cp, 0) + ln.credit
 
+                # 거래상대방(차주)별 기초이월·약정이자 — 3단계 표(별지19호 1행/차주)
+                _lp = {
+                    str(p.get("name", "")).strip(): p
+                    for p in (mi.related_loan_parties or [])
+                    if str(p.get("name", "")).strip()
+                }
                 _parties: list[tuple[str, int, int]] = [
-                    (cp, jeoksu_from_deltas(deltas, fy_start, fy_end_val),
-                     _actual_by_cp.get(cp, 0))
+                    (cp,
+                     jeoksu_from_deltas(deltas, fy_start, fy_end_val,
+                                        opening=int(_lp.get(cp, {}).get("opening", 0))),
+                     _actual_by_cp.get(cp, 0) + int(_lp.get(cp, {}).get("interest", 0)))
                     for cp, deltas in _party_deltas.items()
                 ]
-                if mi.related_loan_opening > 0:
-                    _parties.append(
-                        ("(기초이월분 — 상대방 미지정)", mi.related_loan_opening * _fy_d, 0)
-                    )
-                if not _parties and mi.related_loan_balance > 0:
-                    # 분개 체크 없음 — 잔액 × 일수로 적수 근사 (단일 상대방 취급)
-                    _parties = [("전체 (잔액 근사)",
-                                 mi.related_loan_balance * _fy_d, mi.related_loan_interest)]
+                # 표에만 있는 차주(당기 거래 0건·기초이월만 있는 경우)
+                for _nm, _p in _lp.items():
+                    if _nm not in _party_deltas:
+                        _op, _it = int(_p.get("opening", 0)), int(_p.get("interest", 0))
+                        if _op or _it:
+                            _parties.append((_nm, _op * _fy_d,
+                                             _actual_by_cp.get(_nm, 0) + _it))
+                # 폴백 — 거래상대방 표가 비었을 때만 (이중계상 방지)
+                if not _lp:
+                    if mi.related_loan_opening > 0:
+                        _parties.append(
+                            ("(기초이월분 — 상대방 미지정)", mi.related_loan_opening * _fy_d, 0)
+                        )
+                    if not _parties and mi.related_loan_balance > 0:
+                        _parties = [("전체 (잔액 근사)",
+                                     mi.related_loan_balance * _fy_d, mi.related_loan_interest)]
 
                 _loan_jeoksu_total = sum(p[1] for p in _parties)
                 if _parties:
                     dip = calc_deemed_interest_by_party(_parties, rate=_rate, days=_fy_d)
                     _incl = dip.inclusion_amount
-                    # 수기 입력 약정이자 (상대방 미지정) — 합계에서 차감 (검토 표시)
-                    if _loan_lines and mi.related_loan_interest > 0:
+                    # 단일 수기 약정이자 차감 — 거래상대방 표 미사용 시에만 (표 사용 시 차주별 반영됨)
+                    if not _lp and _loan_lines and mi.related_loan_interest > 0:
                         _incl = max(0, _incl - mi.related_loan_interest)
                     result.deemed_interest = _incl
+                    # 소득처분 귀속자 입력용 — 익금산입된 상대방별 내역 저장 (영§106)
+                    result.deemed_interest_parties = [
+                        {"name": p.name, "amount": p.inclusion}
+                        for p in dip.parties if p.inclusion > 0
+                    ]
                     _di_formula = [
                         f"적용 이자율 {_rate:.2%} ({_rate_label}) · 사업연도 {_fy_d}일",
                         "거래상대방별: 인정이자 = 가지급금 적수 × 이자율 ÷ 365 (영§89⑤) — "
@@ -284,12 +343,16 @@ def render(proj) -> None:
                         )
                     if len(dip.parties) > 8:
                         _di_formula.append(f"· 외 {len(dip.parties) - 8}명")
-                    if _loan_lines and mi.related_loan_interest > 0:
+                    if not _lp and _loan_lines and mi.related_loan_interest > 0:
                         _di_formula.append(
                             f"수기 입력 약정이자 {mi.related_loan_interest:,}원 차감 "
                             f"(상대방 미지정 — 상대방별 귀속 확인 필요)"
                         )
                     _di_formula.append(f"익금산입 합계 = {result.deemed_interest:,}원")
+                    _di_actual = sum(p.actual for p in dip.parties) + (
+                        mi.related_loan_interest if (not _lp and _loan_lines and mi.related_loan_interest > 0) else 0
+                    )
+                    _di_deemed = sum(p.deemed for p in dip.parties)
                     _add_detail(
                         "가지급금 인정이자", result.deemed_interest,
                         "법§52, 영§88①6호·③, 영§89③⑤",
@@ -299,6 +362,10 @@ def render(proj) -> None:
                                "일별 적수를 계산 (1단계 특수관계인 목록 기준 추천) — 약정이자는 "
                                "이자수익 분개의 거래처로 자동 매칭. 영§88③ 기준(차액 3억 또는 시가 5%) "
                                "미달 상대방은 제외",
+                        book=_di_actual, tax=_di_deemed,
+                        tax_basis=f"거래상대방별 가지급금 적수 × {_rate:.2%} ÷ {_fy_d}일 (영§89⑤) "
+                                  "— 상대방 간 통산 없음·동일인 가수금 상계, 약정이자 차감 후 익금산입",
+                        disposition="상여 등",
                     )
 
                 # ── 차입금 적수 — 분개장 일별 계산 (4호 지급이자·간주임대료 공용) ──
@@ -315,20 +382,37 @@ def render(proj) -> None:
 
                 # ── 익금산입: 간주임대료 (조특법§138, 조특령§132 — 전 항목 적수 기준) ──
                 if mi.rental_deposit > 0:
-                    # 임대보증금 적수 — B/S 기초잔액 + 분개장 당기 증감 일별 계산
+                    # 임대보증금 적수 — 받은 보증금(부채) 기준, B/S 기초 + 당기 증감 일별 계산
                     _dep_kw = ("임대보증금", "전세보증금")
-                    _dep_open = _bs_amount_detail(loader, _dep_kw, column="기초잔액")[0]
-                    _dep_jeoksu = account_jeoksu(
-                        loader.journals, _dep_kw, fy_start, fy_end_val,
-                        opening=_dep_open, debit_positive=False,
-                    )
-                    _dep_src = "분개장 일별 계산 (기초잔액 + 당기 증감)"
+                    # 기초총액: 임대물건별 명세 합계 우선, 없으면 B/S 기초잔액
+                    _dep_open = sum(
+                        int(x.get("기초 보증금", 0)) for x in (mi.rental_deposit_items or [])
+                    ) or _bs_amount_detail(loader, _dep_kw, column="기초잔액")[0]
+                    # 3단계에서 '간주임대료 대상'으로 체크된 받은 임대보증금 분개만 사용
+                    _dep_checks = (mi.misc_line_checks or {}).get("rental_deposit_lines", {})
+                    if _dep_checks:
+                        _dep_lines = [
+                            ln for ln in loader.journals
+                            if _dep_checks.get(f"{ln.journal_id}|{ln.source_row}")
+                        ]
+                        _dep_jeoksu = jeoksu_from_deltas(
+                            lines_to_deltas(_dep_lines, debit_positive=False),
+                            fy_start, fy_end_val, opening=_dep_open, floor_zero=False,
+                        )
+                        _dep_src = "분개 체크(받은 임대보증금) 일별 계산"
+                    else:
+                        _dep_jeoksu = account_jeoksu(
+                            loader.journals, _dep_kw, fy_start, fy_end_val,
+                            opening=_dep_open, debit_positive=False,
+                        )
+                        _dep_src = "분개장 일별 계산 (기초잔액 + 당기 증감)"
                     if _dep_jeoksu <= 0:
                         _dep_jeoksu = mi.rental_deposit * _fy_d
                         _dep_src = "기말잔액 × 일수 근사"
 
                     # 건설비상당액 적수 — 건물·구축물 계정(취득가액)의 일별 적수에
-                    # 임대용 비율(입력 건설비 ÷ 기말 건물가액)을 곱해 산정 (조특령§132⑥, 칙§59)
+                    # 임대용 면적비율을 곱해 산정 (조특령§132⑥, 칙§59 — 면적 기준 안분).
+                    # 면적비율 미입력 시 금액비율(입력 건설비 ÷ 기말 건물가액)로 폴백.
                     _con_kw = ("건물", "구축물")
                     _con_close = _bs_amount(loader, _con_kw)
                     _con_open = _bs_amount_detail(loader, _con_kw, column="기초잔액")[0]
@@ -336,12 +420,17 @@ def render(proj) -> None:
                         loader.journals, _con_kw, fy_start, fy_end_val,
                         opening=_con_open, debit_positive=True,
                     )
-                    if (_bld_jeoksu > 0 and _con_close > 0
+                    if _bld_jeoksu > 0 and mi.rental_area_ratio > 0:
+                        _rent_ratio = min(1.0, mi.rental_area_ratio)
+                        _con_jeoksu = int(_bld_jeoksu * _rent_ratio)
+                        _con_src = (f"건물·구축물 분개 일별 계산 × 임대 면적비율 {_rent_ratio:.1%} "
+                                    f"(조특칙§59 면적 기준)")
+                    elif (_bld_jeoksu > 0 and _con_close > 0
                             and 0 < mi.rental_construction_cost):
                         _rent_ratio = min(1.0, mi.rental_construction_cost / _con_close)
                         _con_jeoksu = int(_bld_jeoksu * _rent_ratio)
-                        _con_src = (f"건물·구축물 분개 일별 계산 × 임대용 비율 {_rent_ratio:.1%} "
-                                    f"(입력 건설비 ÷ 기말 건물가액 {_con_close:,}원)")
+                        _con_src = (f"건물·구축물 분개 일별 계산 × 금액비율 {_rent_ratio:.1%} "
+                                    f"(입력 건설비 ÷ 기말 건물가액 {_con_close:,}원 — 면적비율 미입력 폴백)")
                     else:
                         _con_jeoksu = mi.rental_construction_cost * _fy_d
                         _con_src = "입력 잔액 × 일수 근사"
@@ -363,7 +452,11 @@ def render(proj) -> None:
                     if dr.applicable:
                         _add_detail(
                             "간주임대료", dr.inclusion_amount, "조특법§138, 조특령§132⑤",
-                            [f"적용 요건: {dr.reason}",
+                            book=0, tax=dr.inclusion_amount,
+                            tax_basis=(f"(보증금 적수 − 건설비 적수) × 정기예금이자율 {dr.bank_rate:.1%} ÷ {_fy_d}일 "
+                                       f"− 보증금 운용 금융수익 {dr.financial_income:,}원 (조특령§132⑤)"),
+                            disposition="기타사외유출",
+                            formula=[f"적용 요건: {dr.reason}",
                              f"임대보증금 적수 {_dep_jeoksu:,} ← {_dep_src}",
                              f"건설비상당액 적수 {_con_jeoksu:,} ← {_con_src}",
                              f"(보증금 적수 − 건설비 적수) × 1/{_fy_d} × 정기예금이자율 {dr.bank_rate:.1%} = {int(max(0, _dep_jeoksu - _con_jeoksu) * dr.bank_rate / _fy_d):,}원",
@@ -390,7 +483,55 @@ def render(proj) -> None:
                         agg.detail_lines.get("수입배당금"),
                         reason="분개장에서 배당금수익 계정(711) 대변 발견 + 3단계 입력 출자비율로 "
                                "익금불산입률 구간 결정",
+                        book=_divr.dividend_income,
+                        tax=_divr.dividend_income - _divr.exclusion_amount,
+                        tax_basis=f"수입배당금 × 익금불산입률 {_divr.exclusion_rate:.0%} 차감 (법§18의2①)",
+                        disposition="기타",
                     )
+
+                # ── 익금불산입: 자산수증익·채무면제익 이월결손금 보전 (법§18 6호, 영§16) ──
+                if mi.asset_gift_revenue or mi.debt_forgiveness_revenue:
+                    _dro = calc_debt_relief_offset(
+                        asset_gift=mi.asset_gift_revenue,
+                        debt_forgiveness=mi.debt_forgiveness_revenue,
+                        carryforward_available=mi.debt_relief_carryforward,
+                    )
+                    result.debt_relief_offset = _dro.offset
+                    _add_detail(
+                        "자산수증익·채무면제익 (이월결손금 보전)", _dro.offset, "법§18 6호",
+                        [f"자산수증익 {_dro.asset_gift:,}원 + 채무면제익 {_dro.debt_forgiveness:,}원 "
+                         f"= {_dro.gross:,}원 중 보전 충당 이월결손금({_dro.carryforward_available:,}원) "
+                         f"한도까지 익금불산입 = {_dro.offset:,}원",
+                         "수익 계상된 자산수증익·채무면제익은 이미 net_income 포함 → 보전충당분만 손금산입(△, 기타)",
+                         "근거 자료: 3단계 수기 입력 (자산수증익·채무면제익·보전 이월결손금)"],
+                        reason="3단계에서 자산수증익·채무면제익 수익 계상액과 보전에 충당하는 "
+                               "이월결손금(영§16 — 공제기한 지난 것 포함)을 입력 → min(이익, 결손금) 익금불산입",
+                        book=_dro.gross, tax=_dro.gross - _dro.offset,
+                        tax_basis="이월결손금 보전 충당액만큼 익금불산입(손금산입 △) (법§18 6호, 영§16)",
+                        disposition="기타",
+                    )
+
+                # ── 익금불산입: 국세환급금 이자(법§18 4호)·부가세 매출세액(법§18 5호) ──
+                result.refund_interest_excluded = max(0, mi.refund_interest_revenue)
+                result.vat_output_excluded = max(0, mi.vat_output_revenue)
+                _add_detail(
+                    "국세환급금 이자", result.refund_interest_excluded, "법§18 4호",
+                    ["국세·지방세 과오납 환급금에 부가되는 이자(국세환급가산금)를 수익 계상한 경우 → 전액 익금불산입",
+                     "근거 자료: 3단계 수기 입력 (수익 계상한 국세환급금 이자)"],
+                    reason="3단계에서 잡이익·이자수익 중 국세환급가산금 해당분을 입력 → 익금불산입(△, 기타)",
+                    book=result.refund_interest_excluded, tax=0,
+                    tax_basis="국세·지방세 과오납 환급금 이자는 익금불산입 (법§18 4호)",
+                    disposition="기타",
+                )
+                _add_detail(
+                    "부가가치세 매출세액", result.vat_output_excluded, "법§18 5호",
+                    ["부가가치세 매출세액을 수익으로 계상한 경우 → 전액 익금불산입 (정상 회계처리 시 미발생)",
+                     "근거 자료: 3단계 수기 입력 (수익 계상한 부가세 매출세액)"],
+                    reason="3단계에서 수익으로 잘못 계상된 부가세 매출세액을 입력 → 익금불산입(△, 기타)",
+                    book=result.vat_output_excluded, tax=0,
+                    tax_basis="부가가치세 매출세액은 익금불산입 (법§18 5호)",
+                    disposition="기타",
+                )
 
                 # ── 수기 입력 필요자료 기반 자동 조정 ──────────────────────
 
@@ -402,6 +543,9 @@ def render(proj) -> None:
                     agg.detail_lines.get("법인세비용"),
                     reason="분개장에서 법인세비용 계정(998·계정명 매칭) 차변 발생 → "
                            "법§21 1호에 따라 조건 없이 항상 전액 손금불산입 (입력 불필요 자동 항목)",
+                    book=result.corporate_tax_expense, tax=0,
+                    tax_basis="법인세·법인지방소득세 비용은 손금 불인정 (법§21 1호, 전액)",
+                    disposition="기타사외유출",
                 )
 
                 # 외화환산손익 — 평가방법 미신고 시 평가손익 부인 (법§42③, 영§76)
@@ -412,9 +556,15 @@ def render(proj) -> None:
                     _fx_why = ("3단계 수기 입력에서 '마감환율 평가방법 신고함'이 체크되지 않음 → "
                                "미신고 법인의 외화 평가손익은 세법상 미실현손익으로 부인 (신고했다면 3단계에서 체크)")
                     _add_detail("외화환산손실 부인", agg.forex_eval_loss, "법§42③, 영§76",
-                                [_fx_note], agg.detail_lines.get("외화환산손실"), reason=_fx_why)
+                                [_fx_note], agg.detail_lines.get("외화환산손실"), reason=_fx_why,
+                                book=agg.forex_eval_loss, tax=0,
+                                tax_basis="평가방법 미신고 → 미실현 평가손익 부인 (법§42③, 영§76)",
+                                disposition="유보")
                     _add_detail("외화환산이익 익금불산입", agg.forex_eval_gain, "법§42③, 영§76",
-                                [_fx_note], agg.detail_lines.get("외화환산이익"), reason=_fx_why)
+                                [_fx_note], agg.detail_lines.get("외화환산이익"), reason=_fx_why,
+                                book=agg.forex_eval_gain, tax=0,
+                                tax_basis="평가방법 미신고 → 미실현 평가손익 부인 (법§42③, 영§76)",
+                                disposition="△유보")
 
                 # 통화선도 등 파생상품 평가손익 (영§76)
                 if not mi.derivative_hedge_reported:
@@ -424,9 +574,15 @@ def render(proj) -> None:
                     _dv_why = ("3단계 수기 입력에서 '파생상품 평가방법 신고함'이 체크되지 않음 → "
                                "평가손익(미실현) 부인. 거래·정산 실현손익은 집계에서 제외되어 있음")
                     _add_detail("파생상품 평가손실 부인", agg.derivative_eval_loss, "영§76",
-                                [_dv_note], agg.detail_lines.get("파생상품 평가손실"), reason=_dv_why)
+                                [_dv_note], agg.detail_lines.get("파생상품 평가손실"), reason=_dv_why,
+                                book=agg.derivative_eval_loss, tax=0,
+                                tax_basis="평가방법 미신고 → 미실현 평가손익 부인 (영§76)",
+                                disposition="유보")
                     _add_detail("파생상품 평가이익 익금불산입", agg.derivative_eval_gain, "영§76",
-                                [_dv_note], agg.detail_lines.get("파생상품 평가이익"), reason=_dv_why)
+                                [_dv_note], agg.detail_lines.get("파생상품 평가이익"), reason=_dv_why,
+                                book=agg.derivative_eval_gain, tax=0,
+                                tax_basis="평가방법 미신고 → 미실현 평가손익 부인 (영§76)",
+                                disposition="△유보")
 
                 # 유가증권 평가손익 — 일반법인 원가법 강제, 전액 부인 (영§75)
                 result.securities_loss_disallowed = agg.securities_eval_loss
@@ -435,9 +591,15 @@ def render(proj) -> None:
                 _sec_why = ("분개장에서 유가증권·금융자산 평가손익 계정 발견 → 일반법인은 원가법이 "
                             "강제되므로 입력과 무관하게 항상 부인 (유보로 처분 후 처분 시 추인)")
                 _add_detail("유가증권 평가손실 부인", agg.securities_eval_loss, "영§75",
-                            [_sec_note], agg.detail_lines.get("유가증권 평가손실"), reason=_sec_why)
+                            [_sec_note], agg.detail_lines.get("유가증권 평가손실"), reason=_sec_why,
+                            book=agg.securities_eval_loss, tax=0,
+                            tax_basis="일반법인 원가법 강제 → 평가손익 부인 (영§75①)",
+                            disposition="유보")
                 _add_detail("유가증권 평가이익 익금불산입", agg.securities_eval_gain, "영§75",
-                            [_sec_note], agg.detail_lines.get("유가증권 평가이익"), reason=_sec_why)
+                            [_sec_note], agg.detail_lines.get("유가증권 평가이익"), reason=_sec_why,
+                            book=agg.securities_eval_gain, tax=0,
+                            tax_basis="일반법인 원가법 강제 → 평가손익 부인 (영§75①)",
+                            disposition="△유보")
 
                 # 재고자산 평가 조정 및 기타 손금불산입 (수기 입력)
                 result.inventory_adjustment = mi.inventory_valuation_adjustment
@@ -449,21 +611,36 @@ def render(proj) -> None:
                 _manual_why = "3단계 수기 입력에서 해당 분개를 직접 체크·분류함 (자동 추출 아님 — 사용자 판단 반영)"
                 _add_detail("재고자산 평가 조정", mi.inventory_valuation_adjustment, "영§74",
                             ["신고 평가방법과 장부 적용방법 불일치 → 세법상 재계산 차액 (무신고 시 선입선출법)", _manual_src],
-                            reason="3단계 재고자산 평가방법 입력에서 ①신고방법과 ②장부방법이 불일치 (또는 무신고)")
+                            reason="3단계 재고자산 평가방법 입력에서 ①신고방법과 ②장부방법이 불일치 (또는 무신고)",
+                            tax_basis="신고 평가방법으로 재계산한 재고자산가액과 장부가액의 차액 (영§74)",
+                            disposition="유보")
                 _add_detail("복리후생비 (열거 외)", mi.welfare_disallowed, "영§45",
                             ["영§45① 열거 항목 외 복리후생비 → 전액 손금불산입", _manual_src],
-                            reason=_manual_why)
+                            reason=_manual_why,
+                            book=mi.welfare_disallowed, tax=0,
+                            tax_basis="영§45① 열거 외 복리후생비 손금 불인정 (전액)",
+                            disposition="상여 등")
                 _add_detail("공동경비 분담 초과", mi.joint_expense_excess, "영§48",
                             [f"부담액 − (공동경비 총액 {mi.joint_total_pool:,}원 × 분담비율 {mi.joint_share_ratio:.1%}) = 초과분 {mi.joint_expense_excess:,}원", _manual_src],
-                            reason="3단계에서 공동경비 분개 체크 + 총액·분담비율 입력 → 분담기준 초과분만 손금불산입")
+                            reason="3단계에서 공동경비 분개 체크 + 총액·분담비율 입력 → 분담기준 초과분만 손금불산입",
+                            book=int(mi.joint_total_pool * mi.joint_share_ratio) + mi.joint_expense_excess,
+                            tax=int(mi.joint_total_pool * mi.joint_share_ratio),
+                            tax_basis=f"공동경비 총액 {mi.joint_total_pool:,}원 × 분담비율 {mi.joint_share_ratio:.1%} = 손금인정 한도 (영§48)",
+                            disposition="기타사외유출")
                 _add_detail("업무무관비용", mi.non_business_expense, "법§27",
                             ["업무와 관련 없는 자산·지출 비용 → 전액 손금불산입", _manual_src],
-                            reason=_manual_why)
+                            reason=_manual_why,
+                            book=mi.non_business_expense, tax=0,
+                            tax_basis="업무와 관련 없는 자산·지출 비용 손금 불인정 (법§27, 전액)",
+                            disposition="기타사외유출")
                 _add_detail("징벌적 손해배상금", mi.punitive_damages, "법§21의2, 영§23",
                             [("실손해액 분명 → 지급액 − 실손해액 " + f"{mi.punitive_actual_amount:,}원" )
                              if mi.punitive_actual_known else "실손해액 불분명 → 지급액 × 2/3 (영§23②)",
                              _manual_src],
-                            reason="3단계에서 손해배상 분개 체크 + 실손해액 분명 여부 선택")
+                            reason="3단계에서 손해배상 분개 체크 + 실손해액 분명 여부 선택",
+                            tax_basis=("지급액 − 실손해액 (영§23)" if mi.punitive_actual_known
+                                       else "실손해액 불분명 → 지급액 × 2/3 손금불산입 (영§23②)"),
+                            disposition="기타사외유출")
 
                 # 임원 상여 한도초과 (법§26, 영§43)
                 if mi.officer_bonus_paid > 0:
@@ -475,7 +652,10 @@ def render(proj) -> None:
                                 [f"지급액 {mi.officer_bonus_paid:,}원 − 정관·주총 한도 {mi.officer_bonus_limit:,}원 = {result.officer_bonus_excess:,}원",
                                  "근거 자료: 3단계 수기 입력 (임원 명단·한도)"],
                                 reason="3단계에서 임원으로 선택한 거래처의 상여 계정 분개를 자동 합산 "
-                                       "(출처 계정과목·집계 내역은 3단계 임원 인건비 화면에 표시) — 입력 한도 초과분")
+                                       "(출처 계정과목·집계 내역은 3단계 임원 인건비 화면에 표시) — 입력 한도 초과분",
+                                book=mi.officer_bonus_paid, tax=mi.officer_bonus_limit,
+                                tax_basis=f"정관·주총 결의 상여 한도 {mi.officer_bonus_limit:,}원 (영§43②)",
+                                disposition="상여")
 
                 # 임원 퇴직금 한도초과 (법§26, 영§44)
                 if mi.officer_retirement_paid > 0 and mi.officer_retirement_last_salary > 0:
@@ -488,7 +668,11 @@ def render(proj) -> None:
                                 [f"한도 = 직전 1년 총급여 {mi.officer_retirement_last_salary:,}원 × 10% × 근속 {mi.officer_retirement_tenure}년",
                                  f"지급액 {mi.officer_retirement_paid:,}원 − 한도 = {result.officer_retirement_excess:,}원"],
                                 reason="3단계에서 임원으로 선택한 거래처의 퇴직급여 계정 분개를 자동 합산 — "
-                                       "정관 규정 없을 때의 법정 한도(총급여×10%×근속) 초과분")
+                                       "정관 규정 없을 때의 법정 한도(총급여×10%×근속) 초과분",
+                                book=mi.officer_retirement_paid,
+                                tax=mi.officer_retirement_paid - result.officer_retirement_excess,
+                                tax_basis=f"직전 1년 총급여 {mi.officer_retirement_last_salary:,}원 × 10% × 근속 {mi.officer_retirement_tenure}년 = 손금인정 한도 (영§44④)",
+                                disposition="상여")
 
                 # 업무용승용차 (법§27의2, 영§50의2) — 차량별 한도 적용 (800만·1,500만은 차량 단위)
                 if agg.vehicle_expense > 0 or mi.vehicle_depreciation > 0:
@@ -531,6 +715,8 @@ def render(proj) -> None:
                             months=fy_months,
                         ))
                     result.vehicle_disallowed = sum(v.total_disallowed for v in _veh_results)
+                    # 감가상각 한도초과분은 유보(이월손금, 법§27의2③) — 개인사용분(사외유출)과 처분 분리
+                    result.vehicle_depr_excess = sum(v.depreciation_limit_excess for v in _veh_results)
 
                     _limit_label = "특정법인 400만원, 영§50의2⑮" if is_spec else "800만원"
                     _veh_formula = [
@@ -560,25 +746,45 @@ def render(proj) -> None:
                         "※ 차량유지비는 분개장에 차량별로 구분되지 않아 감가상각비 비율로 안분함 — "
                         "차량별 실제 유지비·보험 가입이 다르면 3단계에서 보정"
                     )
+                    _veh_related = sum(v.depreciation + v.other_expense for v in _veh_results)
                     _add_detail("업무용승용차 관련비용", result.vehicle_disallowed, "법§27의2, 영§50의2",
                                 _veh_formula, agg.detail_lines.get("업무용승용차 관련비용"),
                                 reason="3단계에서 업무용승용차로 체크한 차량운반구 자산별로 영§50의2 한도를 "
                                        "각각 적용(한도 풀링 방지). 보험·운행기록부·업무사용비율은 3단계 입력 적용. "
-                                       "증빙불비 판정이 아니라 업무사용비율·한도 조정입니다")
+                                       "증빙불비 판정이 아니라 업무사용비율·한도 조정입니다",
+                                book=_veh_related,
+                                tax=_veh_related - result.vehicle_disallowed,
+                                tax_basis="차량별 업무사용비율 적용 + 감가상각 800만원(특정법인 400만원) 한도 (영§50의2)",
+                                disposition="상여 등(개인사용분) / 유보(상각한도초과분)")
 
                 # 지급이자 손금불산입 (법§28) — 직접 입력 금액
                 result.interest_unknown_creditor = mi.interest_unknown_creditor
+                result.interest_nonreal_name = mi.interest_nonreal_name
                 result.interest_construction = mi.interest_construction
                 _add_detail("채권자불분명 사채이자", mi.interest_unknown_creditor, "법§28①1호",
                             ["채권자가 불분명한 사채의 이자 → 전액 손금불산입 (원천세 상당액 외 대표자 상여 처분)",
                              "근거 자료: 3단계 지급이자 분류 표에서 '채권자불분명'으로 분류된 분개 합계"],
                             reason="3단계에서 이자비용 전체 중 '채권자불분명'으로 분류한 라인 합계 — "
-                                   "나머지 일반 이자비용은 조정 없이 손금 인정")
+                                   "나머지 일반 이자비용은 조정 없이 손금 인정",
+                            book=mi.interest_unknown_creditor, tax=0,
+                            tax_basis="채권자 불분명 사채이자 손금 불인정 (법§28①1호, 전액)",
+                            disposition="대표자상여 등")
+                _add_detail("비실명 채권·증권이자", mi.interest_nonreal_name, "법§28①2호",
+                            ["소득세법 §16①1·2·5·8호 채권·증권의 이자·할인액 중 지급받은 자가 불분명한 것 "
+                             "→ 전액 손금불산입 (원천세 상당액 외 대표자 상여 처분)",
+                             "근거 자료: 3단계 지급이자 분류 표에서 '비실명 채권·증권이자'로 분류된 분개 합계"],
+                            reason="채권자불분명 사채이자(1호)와 별개의 독립 손금불산입 항목 (법§28①2호)",
+                            book=mi.interest_nonreal_name, tax=0,
+                            tax_basis="비실명 채권·증권이자 손금 불인정 (법§28①2호, 전액)",
+                            disposition="대표자상여 등")
                 _add_detail("건설자금이자", mi.interest_construction, "법§28①3호, 영§52",
                             ["사업용 유형자산 건설에 충당한 차입금 이자 → 손금불산입 (자본화, 유보)",
                              "근거 자료: 3단계 지급이자 분류 표에서 '건설자금이자'로 분류된 분개 합계"],
                             reason="3단계에서 이자비용 전체 중 '건설자금이자'로 분류한 라인 합계 — "
-                                   "나머지 일반 이자비용은 조정 없이 손금 인정")
+                                   "나머지 일반 이자비용은 조정 없이 손금 인정",
+                            book=mi.interest_construction, tax=0,
+                            tax_basis="건설중 자산 취득원가에 자본화 → 당기 손금 불인정 (법§28①3호, 영§52)",
+                            disposition="유보")
 
                 # 업무무관자산 지급이자 (법§28①4호, 영§53②③ — 적수 기준)
                 # 분자 적수 = 업무무관자산 적수(가목, 영§49) + 특수관계인 가지급금 적수(나목, 영§53①)
@@ -608,7 +814,8 @@ def render(proj) -> None:
                     if _debt_jeoksu > 0:
                         _base_int = max(
                             0, agg.interest_expense
-                            - mi.interest_unknown_creditor - mi.interest_construction
+                            - mi.interest_unknown_creditor - mi.interest_nonreal_name
+                            - mi.interest_construction
                         )
                         _nb_ratio = min(1.0, _nb_numer_j / _debt_jeoksu)
                         result.interest_non_business = int(_base_int * _nb_ratio)
@@ -619,7 +826,7 @@ def render(proj) -> None:
                         _add_detail(
                             "업무무관자산 지급이자", result.interest_non_business,
                             "법§28①4호, 영§53②③",
-                            [f"기준 지급이자 = 이자비용 총액 {agg.interest_expense:,}원 − 채권자불분명 {mi.interest_unknown_creditor:,}원 − 건설자금 {mi.interest_construction:,}원 = {_base_int:,}원",
+                            [f"기준 지급이자 = 이자비용 총액 {agg.interest_expense:,}원 − 채권자불분명 {mi.interest_unknown_creditor:,}원 − 비실명 채권·증권 {mi.interest_nonreal_name:,}원 − 건설자금 {mi.interest_construction:,}원 = {_base_int:,}원",
                              f"분자 적수 = 업무무관자산 적수 {_nonbiz_jeoksu:,} (가목·영§49 — " + ("; ".join(_nonbiz_jeoksu_src[:4]) or f"잔액 × {_fy_d}일") + ") + 가지급금 적수 " + f"{_loan_jeoksu_total:,} (분개장 일별 계산·가수금 상계 후, 나목·영§53①)",
                              f"비율 = min(1, 분자 적수 {_nb_numer_j:,} ÷ 차입금 적수 {_debt_jeoksu:,}) = {_nb_ratio:.1%} ({_debt_jeoksu_src})",
                              f"손금불산입 = {_base_int:,}원 × {_nb_ratio:.1%} = {result.interest_non_business:,}원",
@@ -628,6 +835,10 @@ def render(proj) -> None:
                             agg.detail_lines.get("이자비용"),
                             reason="3단계에서 업무무관자산 체크(계정별 명세) + 특수관계인 가지급금 체크(분개장)의 "
                                    "적수 비율만큼 지급이자 손금불산입 — 가지급금은 인정이자와 동시 적용됨 (별개 조정)",
+                            book=_base_int,
+                            tax=_base_int - result.interest_non_business,
+                            tax_basis=f"기준 지급이자 {_base_int:,}원 × 업무무관·가지급금 적수 비율 {_nb_ratio:.1%} 손금불산입 (영§53②③)",
+                            disposition="기타사외유출",
                         )
                     else:
                         st.info(
@@ -646,6 +857,9 @@ def render(proj) -> None:
                      "근거 자료: 3단계 '부당행위계산 부인' 입력 (특수관계인 거래 분개 참고 표 제공)"],
                     reason="3단계에서 특수관계인 거래 검토 후 시가 차액을 직접 입력함 — "
                            "시가(감정가액·상증법 평가)는 자동 산정 불가",
+                    book=0, tax=mi.unfair_transaction_amount,
+                    tax_basis="고가매입·저가양도 등 시가와의 차액 익금산입 (영§89⑤)",
+                    disposition="배당·상여 등",
                 )
 
                 # 기부금 한도(법§24)는 다른 모든 세무조정 후 차가감소득금액 기준으로
@@ -676,8 +890,8 @@ def render(proj) -> None:
                     _auto_items.add("임원 상여금 한도")
                 if mi.officer_retirement_paid > 0:
                     _auto_items.add("임원 퇴직급여 한도")
-                if (mi.interest_unknown_creditor or mi.interest_construction
-                        or result.interest_non_business):
+                if (mi.interest_unknown_creditor or mi.interest_nonreal_name
+                        or mi.interest_construction or result.interest_non_business):
                     _auto_items.add("지급이자 손금불산입")
                 if mi.donation_special or mi.donation_general or mi.donation_nondesignated:
                     _auto_items.add("기부금 한도")
@@ -706,7 +920,10 @@ def render(proj) -> None:
                             [f"회사계상액(당기 전입) {rall.company_balance:,}원 − 세법 한도 {rall.statutory_limit:,}원 (현행 누적한도 0%) = {rall.excess:,}원"],
                             agg.detail_lines.get("퇴직급여충당금 설정"),
                             reason="분개장에서 퇴직급여충당부채 대변(당기 전입) 자동 집계 — "
-                                   "현행 영§60 한도가 0%이므로 설정액 전액이 한도초과 (퇴직연금 부담금 손금산입은 아래에서 별도 계산)")
+                                   "현행 영§60 한도가 0%이므로 설정액 전액이 한도초과 (퇴직연금 부담금 손금산입은 아래에서 별도 계산)",
+                            book=rall.company_balance, tax=rall.statutory_limit,
+                            tax_basis="세법상 퇴직급여충당금 한도 (현행 누적한도 0%, 영§60)",
+                            disposition="유보")
 
                 # 확정급여형(DB) 퇴직연금 부담금 손금산입 — 영§44의2④ (추계액 한도 방식)
                 pdr = calc_pension_deduction(
@@ -722,7 +939,10 @@ def render(proj) -> None:
                              f"당기 손금산입 = 한도 {pdr.ceiling:,}원 − 직전까지 손금산입 누계 {pdr.prior_deducted:,}원 (영§44의2④2호) = {pdr.deduction:,}원"],
                             reason="3단계 입력(퇴직급여추계액·DB 운용자산·직전 손금누계) 기준으로 "
                                    "확정급여형 퇴직연금 부담금을 영§44의2④ 한도 내에서 손금산입(△유보). "
-                                   "확정기여형(DC) 부담금은 영§44의2③ 전액 손금 — 별도 검토")
+                                   "확정기여형(DC) 부담금은 영§44의2③ 전액 손금 — 별도 검토",
+                            book=0, tax=pdr.deduction,
+                            tax_basis=f"min(추계액 한도 {pdr.estimate_limit:,}원, 예치금 {pdr.fund_balance:,}원) − 직전 손금누계 {pdr.prior_deducted:,}원 (영§44의2④)",
+                            disposition="△유보")
 
                 bdall = calc_bad_debt_allowance(
                     receivable_balance=proj.manual_input.receivable_balance,
@@ -735,7 +955,32 @@ def render(proj) -> None:
                              f"회사계상액 {bdall.company_balance:,}원 − 한도 = {bdall.excess:,}원"],
                             agg.detail_lines.get("대손충당금 설정"),
                             reason="분개장에서 대손충당금 대변(당기 설정) 자동 집계 + 3단계 입력 채권잔액·"
-                                   "대손실적률로 한도 계산 — 한도 초과분만 손금불산입")
+                                   "대손실적률로 한도 계산 — 한도 초과분만 손금불산입",
+                            book=bdall.company_balance, tax=bdall.limit,
+                            tax_basis=f"채권잔액 {bdall.receivable_balance:,}원 × max(1%, 대손실적률 {bdall.actual_bad_rate:.2%}) = 손금인정 한도 (영§61)",
+                            disposition="유보")
+
+                # ── 전기 유보 당기 추인 (회계사 명시 입력 — opt2) ───────────────────
+                #    유보 추인 → 손금산입(△유보) / △유보 추인 → 익금산입(유보).
+                #    감가상각 부인누계(엔진 자동 추인 = depreciation_approved)·기부금 이월은
+                #    제외 (이중계상 방지). 대손충당금 총액법 환입(법§34③) 등은 여기 포함.
+                _rev_deduct = int(getattr(mi, "prior_reserve_reversal_deduct", 0) or 0)
+                _rev_add = int(getattr(mi, "prior_reserve_reversal_add", 0) or 0)
+                result.prior_reserve_reversal_deduct = _rev_deduct
+                result.prior_reserve_reversal_add = _rev_add
+                _add_detail(
+                    "전기 유보 추인 — 손금산입(△유보)", _rev_deduct, "법§34③ 등",
+                    ["전기 유보(대손충당금 총액법 한도초과 등)의 당기 추인 — 손금산입",
+                     "근거: 3단계 수기 입력 '전기 유보 당기 추인'",
+                     "※ 감가상각 부인누계 추인은 엔진 자동 반영 — 여기서 제외"],
+                    reason="전기에 손금불산입(유보)된 금액이 당기에 추인되어 손금산입(△유보)되는 회계사 확정분",
+                    disposition="△유보")
+                _add_detail(
+                    "전기 △유보 추인 — 익금산입(유보)", _rev_add, "영§106 등",
+                    ["전기 △유보(익금불산입)의 당기 추인 — 익금산입",
+                     "근거: 3단계 수기 입력 '전기 유보 당기 추인'"],
+                    reason="전기에 익금불산입(△유보)된 금액이 당기에 추인되어 익금산입(유보)되는 회계사 확정분",
+                    disposition="유보")
 
                 # ── 기부금 한도 (법§24②2호·③2호) — 모든 조정 후 차가감소득금액 기준 ──
                 _carryforward_pairs = [
@@ -781,7 +1026,11 @@ def render(proj) -> None:
                                  f"비지정기부금 {_don_nondes:,}원 → 전액 손금불산입",
                                  "근거: 3단계 수기 입력의 기부금 분류 (법§24②2호·③2호)"],
                                 reason="기부금 한도는 다른 모든 세무조정 후 차가감소득금액에 특례·일반기부금을 "
-                                       "가산한 기준소득금액에서 이월결손금을 차감해 계산 — 분류별 한도초과분 + 비지정 전액")
+                                       "가산한 기준소득금액에서 이월결손금을 차감해 계산 — 분류별 한도초과분 + 비지정 전액",
+                                book=_don_special + _don_general + _don_nondes,
+                                tax=(_don_special + _don_general + _don_nondes) - _don.total_disallowed,
+                                tax_basis=f"특례기부금 한도 {_don.special_limit:,}원(50%) + 일반기부금 한도 {_don.general_limit:,}원(10%), 비지정은 전액부인 (법§24)",
+                                disposition="기타사외유출")
 
                 st.session_state.calc_details = calc_details
                 st.session_state.tax_result = result
@@ -792,12 +1041,34 @@ def render(proj) -> None:
             net_income = _net_income_input
             if _auto_ni == 0 and _manual_ni != 0:
                 st.info(f"당기순이익 수기 입력값 {_manual_ni:,}원으로 계산했습니다 — 검토조서에 출처를 기록하세요.")
+            # 세액공제·감면 (3단계 입력) → TaxCredit 리스트. 최저한세 적용대상 여부 포함.
+            _tax_credits = [
+                TaxCredit(
+                    name=str(_tc.get("name", "")),
+                    amount=int(_tc.get("amount", 0) or 0),
+                    subject_to_min_tax=bool(_tc.get("subject_to_min_tax", True)),
+                    farm_surtax_taxable=bool(_tc.get("farm_surtax_taxable", False)),
+                )
+                for _tc in (mi.tax_credit_items or [])
+                if int(_tc.get("amount", 0) or 0) > 0
+            ]
+            # 토지등 양도소득에 대한 법인세 (법§55의2) — 일반 법인세에 추가 납부
+            _land_tax = calc_land_transfer_tax(
+                int(mi.land_transfer_income or 0),
+                mi.land_transfer_type,
+                unregistered=bool(mi.land_transfer_unregistered),
+            )
             compute_all(
                 result,
                 net_income=net_income,
                 carryforward_losses=carryforward,
                 fiscal_year_end=fy_end_val,
-                tax_credits=[],
+                tax_credits=_tax_credits,
+                surtax=int(mi.surtax_amount or 0),
+                prepaid_tax=int(mi.prepaid_tax_amount or 0),
+                land_transfer_tax=_land_tax,
+                non_taxable=int(mi.non_taxable_income or 0),
+                income_deduction=int(mi.income_deduction or 0),
             )
 
             # ── 차기 승계용 결과 저장 (.taxproj에 포함 → 내년 '전년도 자료 불러오기') ──
@@ -839,6 +1110,16 @@ def render(proj) -> None:
         m2.metric("각사업연도소득",   f"{r.business_income:,.0f}원")
         m3.metric("과세표준",         f"{r.tax_base:,.0f}원")
         m4.metric("차감납부세액",     f"{r.final_tax_due:,.0f}원")
+        if r.land_transfer_tax:
+            st.caption(
+                f"※ 토지등 양도소득에 대한 법인세 **{r.land_transfer_tax:,}원** (법§55의2) — "
+                "일반 법인세에 추가하여 위 차감납부세액에 포함됨 (최저한세·세액공제 대상 아님)."
+            )
+        if r.farm_surtax:
+            st.caption(
+                f"※ 농어촌특별세 **{r.farm_surtax:,}원** (감면세액 × 20%, 농특세법§5①) — "
+                "법인세와 별도로 신고·납부하며 위 차감납부세액에 포함되지 않습니다."
+            )
 
         st.divider()
         st.markdown(section_title(
@@ -846,7 +1127,65 @@ def render(proj) -> None:
             "가산조정(익금산입·손금불산입)과 차감조정(손금산입·익금불산입)을 모두 표시합니다.",
         ), unsafe_allow_html=True)
         import pandas as pd
-        add_items, deduct_items = adjustment_rows(r)
+
+        # ── 소득처분 귀속자 확정 (영§106) — 사외유출 항목만, 미선택 시 '검토필요' ──
+        _disp_choices = dict((proj.tax_adjustments or {}).get("disposition_choices", {}))
+        if (r.deemed_interest or r.unfair_transaction or r.welfare_disallowed
+                or r.vehicle_disallowed or r.interest_unknown_creditor
+                or r.interest_nonreal_name):
+            with st.expander("소득처분 귀속자 확정 (영§106) — 사외유출 항목"):
+                st.caption("귀속자: 주주→배당 · 임원·직원→상여 · 법인등→기타사외유출 · 기타→기타소득 · 불분명→대표자상여")
+                _opts = ["(미선택)"] + ATTRIBUTION_TYPES
+
+                def _disp_sel(label, key):
+                    _cur = _disp_choices.get(key)
+                    _v = st.selectbox(
+                        label, _opts,
+                        index=(_opts.index(_cur) if _cur in _opts else 0),
+                        key=f"disp_{key}",
+                    )
+                    if _v != "(미선택)":
+                        _disp_choices[key] = _v
+                    else:
+                        _disp_choices.pop(key, None)
+
+                for _p in (r.deemed_interest_parties or []):
+                    _pnm = str(_p.get("name", ""))
+                    _disp_sel(f"가지급금 인정이자 — {_pnm} ({int(_p.get('amount', 0)):,}원)",
+                              f"인정이자|{_pnm}")
+                if r.unfair_transaction:
+                    _disp_sel(f"부당행위계산 부인 ({r.unfair_transaction:,}원)", "부당행위계산 부인")
+                    st.caption("※ 자본거래(불공정 합병·증자 등 영§88①8호·8호의2)로 귀속자에게 증여세가 과세되는 "
+                               "금액은 귀속자 무관 **기타사외유출**(영§106①3호 자목) — 해당 시 '법인등' 선택")
+                if r.welfare_disallowed:
+                    _disp_sel(f"복리후생비 열거외 ({r.welfare_disallowed:,}원)", "복리후생비 (열거 외)")
+                _veh_personal = r.vehicle_disallowed - r.vehicle_depr_excess
+                if _veh_personal:
+                    _disp_sel(f"업무용승용차 개인사용분 ({_veh_personal:,}원 · 감가상각 한도초과는 유보 별도)",
+                              "업무용승용차 개인사용분")
+                if r.interest_unknown_creditor:
+                    _wh = st.number_input(
+                        f"채권자불분명 사채이자 원천세 상당액 (총 {r.interest_unknown_creditor:,}원 중)",
+                        min_value=0, max_value=int(r.interest_unknown_creditor),
+                        value=int(_disp_choices.get("채권자불분명 사채이자|원천세", 0)),
+                        step=100_000,
+                        help="원천세 상당액=기타사외유출, 잔액=대표자상여 (영§106)",
+                    )
+                    _disp_choices["채권자불분명 사채이자|원천세"] = int(_wh)
+                if r.interest_nonreal_name:
+                    _wh2 = st.number_input(
+                        f"비실명 채권·증권이자 원천세 상당액 (총 {r.interest_nonreal_name:,}원 중)",
+                        min_value=0, max_value=int(r.interest_nonreal_name),
+                        value=int(_disp_choices.get("비실명 채권·증권이자|원천세", 0)),
+                        step=100_000,
+                        help="원천세 상당액=기타사외유출, 잔액=대표자상여 (영§106, 법§28①2호)",
+                    )
+                    _disp_choices["비실명 채권·증권이자|원천세"] = int(_wh2)
+            if proj.tax_adjustments is None:
+                proj.tax_adjustments = {}
+            proj.tax_adjustments["disposition_choices"] = _disp_choices
+
+        add_items, deduct_items = adjustment_rows(r, _disp_choices)
         _adj_type = adj_type
         col_add, col_ded = st.columns(2, gap="medium")
         with col_add:
@@ -865,6 +1204,98 @@ def render(proj) -> None:
                 "소득처분은 **후보**입니다 — 귀속자(대표자·주주·임원)에 따라 상여·배당·기타사외유출이 "
                 "달라지므로 최종 확인 필요. 결산조정 항목은 장부 계상 여부가 손금 인정의 전제입니다."
             )
+
+        # ── 자본금과적립금조정명세서(을) — 편집 가능 유보 잔액표 (별지 제50호서식(을)) ──
+        _depr_end = sum(
+            d.denial_end for d in (st.session_state.get("depr_results") or [])
+        ) or int((proj.tax_adjustments or {}).get("depreciation_denial_end", 0))
+        # 자동 산출 기준선 (감소 보정·수기행 적용 전) — 변경분만 override로 저장하기 위함
+        _auto_base = build_reserve_status(
+            proj.manual_input.prior_reserves, r, depr_denial_end=_depr_end,
+            bad_debt_method=proj.manual_input.bad_debt_method,
+        )
+        _base_dec = {x["과목"]: x["감소"] for x in _auto_base}
+        if _auto_base:
+            if proj.tax_adjustments is None:
+                proj.tax_adjustments = {}
+            _saved = proj.tax_adjustments
+            _dec_ov = dict(_saved.get("reserve_decrease_overrides", {}))
+            _manual = list(_saved.get("reserve_manual_rows", []))
+
+            st.markdown(section_title(
+                "자본금과적립금조정명세서(을) — 유보 잔액 명세 (편집 가능)",
+                "전기이월 유보 + 당기 증감 = 기말 유보. ⚠ 검토 항목은 '당기감소(추인)'를 직접 입력해 보정하세요.",
+            ), unsafe_allow_html=True)
+
+            # (1) 자동 산출 행 — '당기감소(추인)'만 편집
+            _adf = pd.DataFrame([
+                {"과목": x["과목"], "기초": x["기초"], "증가": x["증가"],
+                 "당기감소(추인)": _dec_ov.get(x["과목"], x["감소"]),
+                 "처분": x["처분"], "검토": "⚠" if x["검토"] else ""}
+                for x in _auto_base
+            ])
+            _aedit = st.data_editor(
+                _adf,
+                column_config={"당기감소(추인)": st.column_config.NumberColumn(
+                    "당기감소(추인)", format="%d", help="환입·추인액 — 입력 시 기말이 재계산됩니다")},
+                disabled=["과목", "기초", "증가", "처분", "검토"],
+                use_container_width=True, hide_index=True, key="reserve_auto_editor",
+            )
+            # 자동 기준선과 다른 감소만 override로 저장 (같으면 제거 → 검토 플래그 유지)
+            _new_ov = {}
+            for _, row in _aedit.iterrows():
+                _code = row["과목"]
+                _dec = int(row["당기감소(추인)"] or 0)
+                if _dec != int(_base_dec.get(_code, 0)):
+                    _new_ov[_code] = _dec
+            _saved["reserve_decrease_overrides"] = _new_ov
+
+            # (2) 수기 유보 항목 추가 (일시상각·압축기장충당금·준비금 등 — 자동 범위 밖)
+            with st.expander("수기 유보 항목 추가 (일시상각·압축기장충당금·준비금 등)"):
+                _mdf = pd.DataFrame(
+                    _manual or [],
+                    columns=["과목", "기초", "증가", "감소", "처분"],
+                )
+                _medit = st.data_editor(
+                    _mdf, num_rows="dynamic",
+                    column_config={
+                        "기초": st.column_config.NumberColumn("기초", format="%d"),
+                        "증가": st.column_config.NumberColumn("당기증가", format="%d"),
+                        "감소": st.column_config.NumberColumn("당기감소", format="%d"),
+                        "처분": st.column_config.SelectboxColumn("처분", options=["유보", "△유보"]),
+                    },
+                    use_container_width=True, hide_index=True, key="reserve_manual_editor",
+                )
+                _manual = [
+                    {"과목": str(row["과목"]).strip(),
+                     "기초": int(row["기초"] or 0), "증가": int(row["증가"] or 0),
+                     "감소": int(row["감소"] or 0), "처분": str(row["처분"] or "유보")}
+                    for _, row in _medit.iterrows() if str(row.get("과목", "")).strip()
+                ]
+                _saved["reserve_manual_rows"] = _manual
+
+            # (3) 보정·수기행 반영한 최종 표 + 합계
+            _reserve_rows = build_reserve_status(
+                proj.manual_input.prior_reserves, r, depr_denial_end=_depr_end,
+                bad_debt_method=proj.manual_input.bad_debt_method,
+                decrease_overrides=_new_ov, manual_rows=_manual,
+            )
+            _rt = reserve_totals(_reserve_rows)
+            _fdf = pd.DataFrame([
+                {"과목": x["과목"], "기초잔액": f"{x['기초']:,}", "당기 증가": f"{x['증가']:,}",
+                 "당기 감소": f"{x['감소']:,}", "기말잔액": f"{x['기말']:,}", "처분": x["처분"],
+                 "검토": "⚠ 추인확인" if x["검토"] else "✓"}
+                for x in _reserve_rows
+            ])
+            st.dataframe(_fdf, use_container_width=True, hide_index=True)
+            rc1, rc2, rc3 = st.columns(3)
+            rc1.metric("유보 기말 합계", f"{_rt['유보_기말']:,}원")
+            rc2.metric("△유보 기말 합계", f"{_rt['△유보_기말']:,}원")
+            rc3.metric("순유보 기말", f"{_rt['순유보_기말']:,}원")
+            if any(x["검토"] for x in _reserve_rows):
+                st.caption(
+                    "⚠ '추인확인' 항목은 당기 추인(감소)이 자동 반영되지 않았습니다 — 위 표에서 직접 입력해 보정하세요."
+                )
 
         # ── 검토메모 — 발생 항목별 회계사 메모 (.taxproj에 저장되어 차기 참조) ──
         _nonzero_items = [
@@ -900,6 +1331,24 @@ def render(proj) -> None:
                     for _, row in _memo_edit.iterrows() if str(row["검토메모"]).strip()
                 }
 
+        # ── 세무 컨설팅 코멘트 (규칙엔진 발굴 — 회계사 채택 후 확정, ADR-002) ──
+        _topics = build_consulting_topics(
+            company=proj.company, manual_input=proj.manual_input,
+            result=r, fiscal_year_end=fy_end_val,
+        )
+        if _topics:
+            st.markdown(section_title(
+                "세무 컨설팅 코멘트 (검토 후보)",
+                "재무자료·세무조정 결과에서 규칙엔진이 발굴한 자문 후보입니다. "
+                "모두 미확정 — 회계사가 요건 검토 후 채택·확정하세요 (AI가 적용을 확정하지 않습니다).",
+            ), unsafe_allow_html=True)
+            _cat_icon = {"리스크": "🔴", "특례·감면": "🟢", "정책": "🔵"}
+            for _t in _topics:
+                with st.expander(f"{_cat_icon.get(_t.category, '·')} [{_t.category}] {_t.title} · {_t.severity}"):
+                    st.markdown(f"**발견:** {_t.finding}")
+                    st.markdown(f"**권고:** {_t.suggestion}")
+                    st.caption(f"근거: {_t.legal_basis} · 상태: {_t.status}")
+
         # ── 자동 세무조정 계산 내역 (산식 + 분개장 근거 드릴다운) ──────────
         _details: dict = st.session_state.get("calc_details") or {}
         if _details:
@@ -918,11 +1367,22 @@ def render(proj) -> None:
             st.markdown(f"**법령 근거: {_d['법령']}**")
             if _d.get("사유"):
                 st.info(f"**왜 자동조정 되었나** — {_d['사유']}")
+            # Book / Tax / 세무상 금액 계산근거 / T·A · 소득처분 (검토패키지와 동일 형식)
+            _bk = _d.get("book")
+            _tx = _d.get("tax")
+            bc1, bc2, bc3 = st.columns(3)
+            bc1.metric("Book (장부상 금액)", f"{_bk:,}원" if _bk is not None else "—")
+            bc2.metric("Tax (세무상 금액)", f"{_tx:,}원" if _tx is not None else "—")
+            bc3.metric("T/A (세무조정)", f"{_d['금액']:,}원")
+            if _d.get("tax_basis"):
+                st.markdown(f"**세무상 금액 계산근거** — {_d['tax_basis']}")
+            st.markdown(f"**소득처분** — {_d.get('처분') or '검토필요 (귀속자 미정)'}")
+            st.caption("세무상 금액 산정 상세")
             for _f in _d["산식"]:
                 st.markdown(f"- {_f}")
             _dlines = _d.get("lines") or []
             if _dlines:
-                st.caption(f"집계에 사용된 분개 {len(_dlines):,}건")
+                st.caption(f"근거분개 {len(_dlines):,}건")
                 _ddf = pd.DataFrame([
                     {
                         "날짜":     str(ln.date),
@@ -943,7 +1403,7 @@ def render(proj) -> None:
                     striped_by_group(_ddf), use_container_width=True,
                     hide_index=True, height=320,
                 )
-                _dcsv = pd.DataFrame([
+                _dcsv = safe_df(pd.DataFrame([
                     {
                         "날짜": str(ln.date), "전표번호": ln.journal_id,
                         "계정코드": ln.account_code, "계정과목": ln.account_name,
@@ -952,7 +1412,7 @@ def render(proj) -> None:
                         "원본위치": f"{ln.source_sheet}!행{ln.source_row}",
                     }
                     for ln in _dlines
-                ]).to_csv(index=False).encode("utf-8-sig")
+                ])).to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
                     "이 항목 분개 내역 CSV 다운로드 (검토조서 첨부용)",
                     data=_dcsv,
@@ -1117,7 +1577,7 @@ def render(proj) -> None:
                     striped_by_group(_lines_df), use_container_width=True,
                     hide_index=True, height=400,
                 )
-                _csv = _lines_df.to_csv(index=False).encode("utf-8-sig")
+                _csv = safe_df(_lines_df).to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
                     "이 내역 CSV 다운로드 (검토조서 첨부용)",
                     data=_csv,
@@ -1207,16 +1667,15 @@ def render(proj) -> None:
     st.divider()
     st.markdown(section_title(
         "전년 대비 증감분석 (분석적 검토)",
-        "전기 값 출처: ① 2단계에 업로드한 전기 손익계산서 (우선) ② 당기 손익계산서의 전기 열. "
-        "급증 항목이 검토 우선순위입니다.",
+        "전기 값은 당기 손익계산서의 전기 열에서 자동 추출합니다. 급증 항목이 검토 우선순위입니다.",
     ), unsafe_allow_html=True)
     _prev_loader = st.session_state.get("prev_loader")
     _prev_is = getattr(_prev_loader, "income_statement", None)
     _yoy = yoy_table(loader.income_statement, prev_income_df=_prev_is)
     if _yoy is None:
         st.caption(
-            "전기 비교 데이터가 없습니다 — 2단계에서 **전기 손익계산서**를 업로드하거나, "
-            "당기 손익계산서가 당기/전기 2개 열이 있는 양식이면 자동 분석됩니다."
+            "전기 비교 데이터가 없습니다 — 당기 손익계산서가 당기/전기 2개 열이 있는 "
+            "양식이면 자동 분석됩니다."
         )
     else:
         st.caption(f"전기 값 출처: **{_yoy.attrs.get('prev_source', '')}**")
@@ -1232,7 +1691,7 @@ def render(proj) -> None:
             st.dataframe(_yoy_show, use_container_width=True, hide_index=True, height=400)
             st.download_button(
                 "증감분석 CSV 다운로드",
-                data=_yoy.to_csv(index=False).encode("utf-8-sig"),
+                data=safe_df(_yoy).to_csv(index=False).encode("utf-8-sig"),
                 file_name=f"증감분석_{proj.company.name}_{fy_end_val}.csv",
                 mime="text/csv", key="yoy_dl",
             )
@@ -1263,10 +1722,37 @@ def render(proj) -> None:
                                  height=min(400, 60 + 36 * len(_bs_show)))
                     st.download_button(
                         "기초잔액 대사 CSV 다운로드",
-                        data=_bs_chk.to_csv(index=False).encode("utf-8-sig"),
+                        data=safe_df(_bs_chk).to_csv(index=False).encode("utf-8-sig"),
                         file_name=f"기초잔액대사_{proj.company.name}_{fy_end_val}.csv",
                         mime="text/csv", key="bs_check_dl",
                     )
+
+    # ── ②-3 제조원가 증감분석 — 전기 제조원가명세서 업로드 시 (제조업) ────────
+    # 원가명세서는 노무비·외주가공비·제조경비 등 P&L에 없는 계정을 담아, 제조업
+    # 세무조정(외주가공비 증빙·복리후생비 등)의 검토 우선순위 판단에 목적적합하다.
+    _prev_cost = getattr(_prev_loader, "cost_statement", None)
+    _cost_yoy = yoy_table(loader.cost_statement, prev_income_df=_prev_cost)
+    if _cost_yoy is not None:
+        st.divider()
+        st.markdown(section_title(
+            "제조원가명세서 증감분석 (분석적 검토)",
+            "전기 값 출처: ① 2단계에 업로드한 전기 제조원가명세서 (우선) "
+            "② 당기 원가명세서의 전기 열. 원가 항목 급증이 검토 우선순위입니다.",
+        ), unsafe_allow_html=True)
+        st.caption(f"전기 값 출처: **{_cost_yoy.attrs.get('prev_source', '')}**")
+        for _f in yoy_flags(_cost_yoy):
+            st.warning(_f)
+        with st.expander(f"원가 계정별 증감 전체 보기 ({len(_cost_yoy)}개 계정)"):
+            _cost_show = _cost_yoy.copy()
+            for c in ("당기", "전기", "증감"):
+                _cost_show[c] = _cost_show[c].map("{:,}".format)
+            st.dataframe(_cost_show, use_container_width=True, hide_index=True, height=400)
+            st.download_button(
+                "원가 증감분석 CSV 다운로드",
+                data=safe_df(_cost_yoy).to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"원가증감분석_{proj.company.name}_{fy_end_val}.csv",
+                mime="text/csv", key="cost_yoy_dl",
+            )
 
     # ── ③ 고객 설명용 메모 — 조정 결과를 고객 언어로 (규칙 기반 템플릿) ───────
     if st.session_state.tax_result and st.session_state.get("calc_details"):

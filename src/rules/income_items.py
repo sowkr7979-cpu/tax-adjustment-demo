@@ -65,6 +65,51 @@ def calc_deemed_interest_by_party(
 
 
 @dataclass
+class DebtReliefOffsetResult:
+    """자산수증익·채무면제익의 이월결손금 보전 충당액 익금불산입 (법§18 6호)."""
+    asset_gift: int             # 자산수증이익 (수익 계상액, 국고보조금 제외)
+    debt_forgiveness: int       # 채무면제이익 (수익 계상액)
+    carryforward_available: int # 보전 대상 이월결손금 (영§16 — 공제기한 지난 것 포함)
+    gross: int                  # 자산수증익 + 채무면제익
+    offset: int                 # 보전 충당액 = min(gross, 이월결손금) — 익금불산입(손금산입 △)
+
+
+def calc_debt_relief_offset(
+    *,
+    asset_gift: int,
+    debt_forgiveness: int,
+    carryforward_available: int,
+) -> DebtReliefOffsetResult:
+    """자산수증익·채무면제익 중 이월결손금 보전 충당액의 익금불산입 (법§18 6호, 영§16).
+
+    law.go.kr 원문 확인 (법§18 6호, efYd=사업연도 종료일):
+      "결손금이 발생한 법인이 무상으로 받은 자산의 가액(제36조 국고보조금등 제외)과
+       채무의 면제·소멸로 인한 부채의 감소액 중 이월결손금을 보전하는 데에 충당한 금액"은
+       익금에 산입하지 아니한다(익금불산입).
+
+    영§16: 보전 대상 이월결손금 = 법§14②의 결손금 중 법§13①1호로 공제되지 않은 금액.
+      → 법§13의 공제기한(15년) 적용을 받는 과세표준 공제용 이월결손금과 달리,
+        공제기한이 지난 결손금도 보전 대상에 포함된다(자기자본 결손 보전 목적).
+      → 따라서 tax_base의 eligible_carryforward_total을 재사용하지 않고
+        별도 입력값(carryforward_available)으로 받는다.
+
+    자산수증익·채무면제익은 영업외수익으로 계상되어 이미 당기순이익에 포함되므로,
+    세무조정은 보전 충당액의 익금불산입(손금산입 △, 소득처분 '기타')이다.
+    보전에 충당할지·얼마를 충당할지는 납세자의 선택이므로 carryforward_available은
+    '보전에 충당하는 이월결손금'을 수기 입력으로 받는다.
+    """
+    gross = max(0, asset_gift) + max(0, debt_forgiveness)
+    offset = min(gross, max(0, carryforward_available))
+    return DebtReliefOffsetResult(
+        asset_gift=max(0, asset_gift),
+        debt_forgiveness=max(0, debt_forgiveness),
+        carryforward_available=max(0, carryforward_available),
+        gross=gross,
+        offset=offset,
+    )
+
+
+@dataclass
 class DeemedRentalResult:
     deposit: int
     debt: int

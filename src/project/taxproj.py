@@ -33,7 +33,14 @@ class CompanyInfo:
 @dataclass
 class ManualInput:
     carryforward_losses: list[dict] = field(default_factory=list)   # [{year, amount}]
+    # 비과세소득·소득공제 (법§13① 2호·3호) — 과세표준에서 차감, 분개 파싱 불가 (수기)
+    non_taxable_income: int = 0                # 비과세소득 (법§51 공익신탁 등)
+    income_deduction: int = 0                  # 소득공제 (법§13①3호 — 이 법·다른 법률)
     prior_reserves: list[dict] = field(default_factory=list)         # 유보잔액 항목별
+    # 전기 유보 당기 추인 → 소득금액 반영 (회계사 명시 입력 — ADR-002 판단 보조)
+    #   감가상각 부인누계(엔진 자동 추인)·기부금 이월(별도)은 제외. 대손충당금 총액법 환입 등 포함.
+    prior_reserve_reversal_deduct: int = 0     # 전기 유보 당기 추인 손금산입액 (△유보)
+    prior_reserve_reversal_add: int = 0        # 전기 △유보 당기 추인 익금산입액 (유보)
     depreciation_denial_cumulative: int = 0
     carryforward_tax_credits: list[dict] = field(default_factory=list)
     related_parties: list[str] = field(default_factory=list)
@@ -43,6 +50,7 @@ class ManualInput:
     prior_pension_deducted: int = 0            # 직전까지 손금산입한 퇴직연금 부담금 누계 (영§44의2④2호)
     receivable_balance: int = 0
     actual_bad_debt_rate: float = 0.01
+    bad_debt_method: str = "총액법"           # 대손충당금 처리방식 (총액법/보충법 — 유보 증감 표시)
 
     # ── 세무조정 필요자료 (체크리스트 '검토필요' → 자동계산 승격용) ──
     # 외화·파생상품 평가 (법§42③, 영§76)
@@ -62,11 +70,15 @@ class ManualInput:
     vehicle_depreciation: int = 0              # 승용차 감가상각비 계상액
     vehicle_asset_checks: dict = field(default_factory=dict)  # {자산코드: 업무용승용차 해당 여부}
     # 지급이자 (법§28)
-    interest_unknown_creditor: int = 0         # 채권자불분명 사채이자
+    interest_unknown_creditor: int = 0         # 채권자불분명 사채이자 (법§28①1호)
+    interest_nonreal_name: int = 0             # 비실명 채권·증권이자 (법§28①2호)
     interest_construction: int = 0             # 건설자금이자
     interest_line_classes: dict = field(default_factory=dict)  # 이자비용 라인별 분류 {전표|행: 분류}
     non_business_asset_checks: dict = field(default_factory=dict)  # 업무무관자산 체크 {계정명: bool}
     non_business_asset_balance: int = 0        # 업무무관자산 잔액 합계 (법§28①4호, 영§53)
+    # 수입금액 보정 (기업업무추진비 한도 분모, 법§25④·영§42① 기업회계기준 매출액)
+    #   0이면 매출계정 자동집계 사용. 파서가 매출을 누락·오분류한 경우만 보정 (임의 가산 금지).
+    revenue_manual: int = 0
     # 기부금 (법§24)
     donation_special: int = 0                  # 특례기부금
     donation_general: int = 0                  # 일반기부금
@@ -86,21 +98,39 @@ class ManualInput:
     punitive_actual_known: bool = False        # 실손해액이 분명한가 (영§23②)
     punitive_actual_amount: int = 0            # 실제 발생한 손해액
     # 가지급금 인정이자 (법§52, 영§88①6호, 영§89③)
-    related_loan_balance: int = 0              # 특수관계인 가지급금 평균잔액
-    related_loan_interest: int = 0             # 수취 약정이자
+    related_loan_balance: int = 0              # 특수관계인 가지급금 평균잔액 (표 미사용 시 폴백)
+    related_loan_interest: int = 0             # 수취 약정이자 (표 미사용 시 폴백)
     related_loan_rate: float = 0.0             # 가중평균차입이자율 (0이면 당좌대출이자율 적용, 영§89③)
-    related_loan_opening: int = 0              # 기초 이월 가지급금 잔액 (적수 계산에 기초분 반영)
+    related_loan_opening: int = 0              # 기초 이월 가지급금 잔액 (표 미사용 시 폴백)
+    # 거래상대방(차주)별 기초이월·약정이자 — 별지19호 1행/차주 (상대방 간 통산 금지)
+    related_loan_parties: list[dict] = field(default_factory=list)  # [{name, opening, interest}]
     # 부당행위계산 부인 (법§52, 영§88) — 고가매입·저가양도 등 시가 비교는 수동 산정
     unfair_transaction_amount: int = 0
     # 수입배당금 (법§18의2)
     dividend_ownership_ratio: float = 0.0      # 출자비율 (0~1)
     # 간주임대료 (조특법§138, 조특령§132)
-    rental_deposit: int = 0                    # 임대보증금
+    rental_deposit: int = 0                    # 임대보증금 기초총액 (받은 보증금 — 표 합계 또는 폴백)
+    rental_deposit_items: list[dict] = field(default_factory=list)  # 임대물건 명세(표시용) [{물건, 기초보증금}]
     rental_debt: int = 0                       # 차입금 잔액
     rental_equity: int = 0                     # 자기자본
     rental_bank_rate: float = 0.035            # 정기예금이자율
     rental_construction_cost: int = 0          # 임대용부동산 건설비상당액 (토지 제외, 조특령§132⑥)
+    rental_area_ratio: float = 0.0             # 임대 면적비율 (임대면적÷전체면적, 조특칙§59 — 건설비 적수 안분, 0이면 금액비율 폴백)
     rental_financial_income: int = 0           # 보증금 운용 금융수익 (이자·배당 등, 조특령§132⑤)
+    # 자산수증익·채무면제익 이월결손금 보전 (법§18 6호, 영§16) — 보전충당액 익금불산입
+    asset_gift_revenue: int = 0                # 자산수증이익 수익 계상액 (국고보조금 제외)
+    debt_forgiveness_revenue: int = 0          # 채무면제이익 수익 계상액
+    debt_relief_carryforward: int = 0          # 보전에 충당하는 이월결손금 (영§16, 공제기한 지난 것 포함)
+    refund_interest_revenue: int = 0           # 수익 계상한 국세·지방세 환급금 이자 (법§18 4호 익금불산입)
+    vat_output_revenue: int = 0                # 수익 계상한 부가가치세 매출세액 (법§18 5호 익금불산입)
+    # 세액 단계 — 세액공제·감면, 가산세, 기납부세액 (법§55~64·73, 조특법)
+    tax_credit_items: list[dict] = field(default_factory=list)  # [{name, amount, subject_to_min_tax}]
+    surtax_amount: int = 0                     # 가산세 (법§75 계열·국기법§47의2~4 — 무신고·과소·납부지연 등)
+    prepaid_tax_amount: int = 0                # 기납부세액 (중간예납 법§63 + 원천납부 법§73 + 수시부과)
+    # 토지등 양도소득에 대한 법인세 (법§55의2)
+    land_transfer_income: int = 0              # 토지등 양도소득 (양도가액 − 장부가액 등)
+    land_transfer_type: str = "비사업용토지"   # 비사업용토지 / 주택별장 / 조합원입주권분양권
+    land_transfer_unregistered: bool = False   # 미등기 양도 여부 (비사업용토지·주택별장은 40%)
 
 
 @dataclass

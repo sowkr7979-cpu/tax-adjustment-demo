@@ -10,6 +10,32 @@ from src.parsers.smart_a import SmartALoader
 from src.ui.styles import page_header, section_title
 
 
+def _load_uploads(loader: SmartALoader, files: dict) -> tuple[dict, int, int]:
+    """업로드 객체 dict({유형: UploadedFile|None})를 임시파일 경유로 파싱한다.
+
+    회계 원본이 임시폴더에 남지 않도록 파싱 직후 임시파일을 삭제한다.
+    반환: (파일별 오류 dict, 성공 건수, 시도 건수).
+    """
+    paths: dict[str, str] = {}
+    try:
+        for k, f in files.items():
+            if f is None:
+                continue
+            ext = Path(f.name).suffix or ".xls"
+            f.seek(0)
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(f.read())
+                paths[k] = tmp.name
+        errors = loader.load(paths) if paths else {}
+    finally:
+        for p in paths.values():
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+    return errors, len(paths) - len(errors), len(paths)
+
+
 def render(loader: SmartALoader) -> None:
     st.markdown(page_header(
         "재무제표 업로드",
@@ -50,25 +76,8 @@ def render(loader: SmartALoader) -> None:
         load_clicked = st.button("파일 로드 및 검증", use_container_width=True)
 
     if load_clicked:
-        # 임시파일은 파싱 동안만 존재 — 파싱 직후 삭제 (회계자료 원본이 임시폴더에 남지 않도록)
-        paths: dict[str, str] = {}
-        try:
-            for k, f in file_types.items():
-                if f is None:
-                    continue
-                ext = Path(f.name).suffix or ".xls"
-                f.seek(0)
-                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                    tmp.write(f.read())
-                    paths[k] = tmp.name
-            with st.spinner("파일 파싱 중..."):
-                errors = loader.load(paths)
-        finally:
-            for p in paths.values():
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+        with st.spinner("파일 파싱 중..."):
+            errors, ok_count, total = _load_uploads(loader, file_types)
 
         # 파일별 에러 표시
         for fname, err in errors.items():
@@ -86,13 +95,12 @@ def render(loader: SmartALoader) -> None:
         for w in loader.validate():
             st.warning(w)
 
-        ok_count = len(paths) - len(errors)
         if ok_count > 0:
             st.success(
-                f"{ok_count}/{len(paths)}개 파일 로드 완료"
+                f"{ok_count}/{total}개 파일 로드 완료"
                 + (f" — 분개장 {len(loader.journals):,}건" if loader.journals else "")
             )
-        elif paths:
+        elif total:
             st.error("업로드된 파일을 모두 파싱하지 못했습니다.")
 
     # ── 파일 표준화 진단 리포트 — 무엇을 어떻게 인식했는지 투명하게 표시 ──
@@ -139,61 +147,66 @@ def render(loader: SmartALoader) -> None:
         m2.metric("고정자산", f"{len(loader.fixed_assets):,}개")
         m3.metric("업로드 파일", f"{sum(1 for v in file_types.values() if v)}개")
 
-    # ── 전기(전년도) 재무제표 — 분석적 검토용 (선택) ──────────────────────────
+    # ── 전기(전년도) 자료 — 분석적 검토용 (선택) ──────────────────────────────
     st.divider()
     st.markdown(section_title(
-        "전기(전년도) 재무제표 업로드 (선택)",
-        "전년 대비 증감분석(분석적 검토)과 기초잔액 대사에 사용됩니다 — "
-        "당기 손익계산서가 단일연도 양식이어도 전기 손익계산서를 올리면 증감분석이 가능하고, "
-        "전기 재무상태표를 올리면 당기 기초잔액 ↔ 전기 기말잔액 대사로 적수 계산의 신뢰성을 검증합니다.",
+        "전기(전년도) 자료 업로드 (선택)",
+        "전년 대비 증감분석(분석적 검토)에 사용됩니다. 전기 재무상태표·손익계산서는 "
+        "당기 재무제표에 전기 열로 이미 표시되므로 받지 않습니다. 대신 **전표 분개장·"
+        "유형/무형자산 대장·제조원가명세서·계정별원장·계정별 잔액명세서**를 올리면, "
+        "요약 수치가 아닌 거래·자산·원가 단위로 전년 대비 증감을 검토할 수 있어 "
+        "분석적 검토에 더 목적적합합니다. 필요한 자료만 골라 올려도 됩니다.",
     ), unsafe_allow_html=True)
 
     prev_loader: SmartALoader = st.session_state.prev_loader
+    # 당기와 동일한 파서를 재사용. 전기 B/S·P&L은 당기 재무제표 전기 열로 갈음하므로 제외
     _PREV_DEFS = [
-        ("재무상태표", "전기 재무상태표 (B/S)"),
-        ("손익계산서", "전기 손익계산서 (P&L)"),
+        ("원가명세서",   "전기 제조원가명세서 — 원가 항목 증감분석"),
+        ("고정자산대장", "전기 유형·무형자산 대장 — 자산 증감 비교"),
+        ("분개장",       "전기 전표·분개장 — 거래 상세 비교"),
+        ("계정별원장",   "전기 계정별원장 — 계정 흐름 비교"),
+        ("계정별명세서", "전기 계정별 잔액명세서 — 보증금·차입금 등 잔액 대사"),
     ]
-    prev_files: dict[str, object | None] = {}
-    pcols = st.columns(2, gap="medium")
-    for (name, label), col in zip(_PREV_DEFS, pcols):
-        with col:
-            f = st.file_uploader(label, type=["xlsx", "xls"], key=f"prev_{name}")
-            prev_files[name] = f
+    prev_files: dict[str, object | None] = {name: None for name, _ in _PREV_DEFS}
+    for i in range(0, len(_PREV_DEFS), 2):
+        pcols = st.columns(2, gap="medium")
+        for j, col in enumerate(pcols):
+            if i + j >= len(_PREV_DEFS):
+                break
+            name, label = _PREV_DEFS[i + j]
+            with col:
+                prev_files[name] = st.file_uploader(
+                    label, type=["xlsx", "xls"], key=f"prev_{name}"
+                )
 
-    if st.button("전기 재무제표 로드"):
-        paths2: dict[str, str] = {}
-        try:
-            for k, f in prev_files.items():
-                if f is None:
-                    continue
-                ext = Path(f.name).suffix or ".xls"
-                f.seek(0)
-                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                    tmp.write(f.read())
-                    paths2[k] = tmp.name
-            if not paths2:
-                st.warning("전기 파일을 선택하세요.")
-            else:
-                with st.spinner("전기 재무제표 파싱 중..."):
-                    errors2 = prev_loader.load(paths2)
-                for fname, err in errors2.items():
-                    st.error(f"**전기 {fname}** 파싱 실패: {err}")
-                ok2 = len(paths2) - len(errors2)
-                if ok2 > 0:
-                    st.success(f"전기 재무제표 {ok2}/{len(paths2)}개 로드 완료")
-        finally:
-            for p in paths2.values():
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+    if st.button("전기 자료 로드"):
+        if not any(prev_files.values()):
+            st.warning("전기 파일을 선택하세요.")
+        else:
+            with st.spinner("전기 자료 파싱 중..."):
+                errors2, ok2, total2 = _load_uploads(prev_loader, prev_files)
+            for fname, err in errors2.items():
+                st.error(f"**전기 {fname}** 파싱 실패: {err}")
+            if ok2 > 0:
+                st.success(
+                    f"전기 자료 {ok2}/{total2}개 로드 완료"
+                    + (f" — 전기 분개장 {len(prev_loader.journals):,}건"
+                       if prev_loader.journals else "")
+                )
 
+    # 로드된 전기 자료 요약 — 어떤 자료가 증감분석에 반영되는지 투명하게 표시
     _prev_status = []
-    if prev_loader.balance_sheet is not None:
-        _prev_status.append(f"전기 B/S {len(prev_loader.balance_sheet)}계정")
-    if prev_loader.income_statement is not None:
-        _prev_status.append(f"전기 P&L {len(prev_loader.income_statement)}계정")
+    if prev_loader.cost_statement is not None:
+        _prev_status.append(f"원가명세서 {len(prev_loader.cost_statement)}계정")
+    if prev_loader.fixed_assets:
+        _prev_status.append(f"고정자산 {len(prev_loader.fixed_assets)}개")
+    if prev_loader.journals:
+        _prev_status.append(f"분개 {len(prev_loader.journals):,}건")
+    if prev_loader.ledger is not None:
+        _prev_status.append(f"계정별원장 {len(prev_loader.ledger):,}행")
+    if prev_loader.account_statement is not None:
+        _prev_status.append(f"잔액명세서 {len(prev_loader.account_statement)}계정")
     if _prev_status:
-        st.caption("✓ 로드됨: " + " · ".join(_prev_status) +
+        st.caption("✓ 전기 자료 로드됨: " + " · ".join(_prev_status) +
                    " — 5단계 증감분석·기초잔액 대사에 자동 반영")
 

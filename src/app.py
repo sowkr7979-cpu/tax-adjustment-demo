@@ -46,7 +46,7 @@ NAV_ITEMS = [
     "1. 기본정보",
     "2. 파일 업로드",
     "3. 수기 입력",
-    "4. LLM 분석",
+    "4. AI 검토 보조",
     "5. 계산·검토",
     "6. 출력",
 ]
@@ -111,7 +111,7 @@ elif page == "2. 파일 업로드":
     upload.render(st.session_state.loader)
 elif page == "3. 수기 입력":
     manual.render(proj)
-elif page == "4. LLM 분석":
+elif page == "4. AI 검토 보조":
     llm.render(proj, llm_ok)
 elif page == "5. 계산·검토":
     calc.render(proj)

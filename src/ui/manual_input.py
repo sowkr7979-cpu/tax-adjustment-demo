@@ -5,6 +5,8 @@ from datetime import date
 import streamlit as st
 
 from src.project.taxproj import ManualInput
+from src.rules.tax_credit_catalog import lookup_credit_spec
+from src.rules.penalty_surtax import aggregate_surtax
 
 
 def validate_manual_input(mi: ManualInput, fiscal_year_end: date) -> list[str]:
@@ -371,6 +373,140 @@ def _render_loan_classifier(mi: ManualInput, journals: list, related_parties: li
     )
     if _net_total > 0 and not mi.related_loan_balance:
         mi.related_loan_balance = _net_total
+
+    # ── 거래상대방(차주)별 기초이월·약정이자 — 별지19호 1행/차주 ──────────────
+    st.markdown("**거래상대방(차주)별 기초이월·약정이자** — 별지 제19호서식 1행/차주")
+    st.caption(
+        "전기에서 이월된 가지급금(당기 거래 0건이어도)과 차주별 수취 약정이자를 입력하세요. "
+        "당기 증감은 위 분개 체크에서 거래상대방별로 자동 반영됩니다. "
+        "상대방 간 통산은 하지 않습니다 (영§88③)."
+    )
+    _cp_cands: list[str] = list(_loan_by_cp.keys())
+    for nm in rp_list:
+        if nm and nm not in _cp_cands:
+            _cp_cands.append(nm)
+    _saved_p = {str(p.get("name", "")).strip(): p for p in (mi.related_loan_parties or [])}
+    for nm in _saved_p:
+        if nm and nm not in _cp_cands:
+            _cp_cands.append(nm)
+    _pdf = pd.DataFrame(
+        [
+            {
+                "거래상대방": nm,
+                "기초이월 가지급금": int(_saved_p.get(nm, {}).get("opening", 0)),
+                "수취 약정이자": int(_saved_p.get(nm, {}).get("interest", 0)),
+            }
+            for nm in _cp_cands
+        ] or [{"거래상대방": "", "기초이월 가지급금": 0, "수취 약정이자": 0}]
+    )
+    _pedit = st.data_editor(
+        _pdf, num_rows="dynamic",
+        column_config={
+            "기초이월 가지급금": st.column_config.NumberColumn("기초이월 가지급금 (원)", format="%d", min_value=0),
+            "수취 약정이자": st.column_config.NumberColumn("수취 약정이자 (원)", format="%d", min_value=0),
+        },
+        use_container_width=True, hide_index=True, key="related_loan_parties_editor",
+    )
+    mi.related_loan_parties = [
+        {
+            "name": str(r["거래상대방"]).strip(),
+            "opening": int(r["기초이월 가지급금"] or 0),
+            "interest": int(r["수취 약정이자"] or 0),
+        }
+        for _, r in _pedit.iterrows() if str(r.get("거래상대방", "")).strip()
+    ]
+    return True
+
+
+# ── 임대보증금 분개 체크 (조특법§138 간주임대료) ──────────────────────────────
+
+def _render_deposit_classifier(mi: ManualInput, journals: list) -> bool:
+    """임대보증금·전세보증금 분개에서 '간주임대료 대상(받은 임대보증금)'을 식별.
+
+    간주임대료 적수는 임대사업용 '받은 보증금' 총액 기준 (조특령§132⑤).
+    체크는 '해당만 선택'이 아니라 '전체 ON, 제외할 것만 해제' — 누락(과소계상) 방지.
+    받은 보증금(부채, 대변 누적)이 대상이고, 회사가 지급·예치한 보증금(자산)은 제외.
+    """
+    import pandas as pd
+
+    lines = [
+        ln for ln in journals
+        if any(k in ln.account_name.replace(" ", "") for k in ("임대보증금", "전세보증금"))
+        and (ln.debit > 0 or ln.credit > 0)
+    ]
+    if not lines:
+        return False
+
+    st.markdown("**임대보증금 분개 — 간주임대료 대상(받은 임대보증금)을 확인하세요**")
+    st.caption(
+        f"분개장에서 임대·전세보증금 계정 {len(lines)}건을 가져왔습니다. **기본 전체 체크** — "
+        "임대 무관 보증금(영업·하자보수·입찰보증금)이나 회사가 **지급한 보증금(자산)**은 체크 해제하세요. "
+        "받은 임대보증금(부채)만 간주임대료 대상입니다 (조특령§132⑤)."
+    )
+    saved = (mi.misc_line_checks or {}).get("rental_deposit_lines", {})
+
+    def _is_received(ln) -> bool:
+        # 받은 보증금(부채)은 통상 대변 계상. 차변 계상은 지급·반환 가능 — 기본 체크 ON은 대변건만
+        return ln.credit >= ln.debit
+
+    df = pd.DataFrame([
+        {
+            "해당": bool(saved.get(_line_key(ln), _is_received(ln))),
+            "구분": "받은(부채)" if _is_received(ln) else "지급/반환?",
+            "날짜": str(ln.date),
+            "계정과목": ln.account_name,
+            "적요": ln.description,
+            "거래처(임차인)": ln.counterparty_name,
+            "차변": ln.debit,
+            "대변": ln.credit,
+            "_key": _line_key(ln),
+        }
+        for ln in lines[:500]
+    ])
+    if len(lines) > 500:
+        st.warning(f"임대·전세보증금 {len(lines):,}건 중 500건만 표시됩니다.")
+    edited = st.data_editor(
+        df,
+        column_config={
+            "해당": st.column_config.CheckboxColumn("간주임대료 대상"),
+            "차변": st.column_config.NumberColumn("차변 (원)", format="%d"),
+            "대변": st.column_config.NumberColumn("대변 (원)", format="%d"),
+            "_key": None,
+        },
+        disabled=["구분", "날짜", "계정과목", "적요", "거래처(임차인)", "차변", "대변"],
+        use_container_width=True, hide_index=True,
+        key="rental_deposit_editor",
+        height=min(300, 60 + 36 * len(df)),
+    )
+    if mi.misc_line_checks is None:
+        mi.misc_line_checks = {}
+    mi.misc_line_checks["rental_deposit_lines"] = dict(
+        zip(edited["_key"], edited["해당"].astype(bool))
+    )
+
+    # ── 임대물건(임차인)별 기초 보증금 명세 — 표시·합계용 (적수는 총액 단일 트랙) ──
+    st.markdown("**임대물건·임차인별 기초 보증금 명세** (합계가 기초 보증금 총액)")
+    _saved_items = mi.rental_deposit_items or []
+    _idf = pd.DataFrame(
+        _saved_items or [{"물건/임차인": "", "기초 보증금": 0}],
+    )
+    if "물건/임차인" not in _idf.columns:
+        _idf = pd.DataFrame([{"물건/임차인": "", "기초 보증금": 0}])
+    _iedit = st.data_editor(
+        _idf, num_rows="dynamic",
+        column_config={
+            "기초 보증금": st.column_config.NumberColumn("기초 보증금 (원)", format="%d", min_value=0),
+        },
+        use_container_width=True, hide_index=True, key="rental_deposit_items_editor",
+    )
+    mi.rental_deposit_items = [
+        {"물건/임차인": str(r["물건/임차인"]).strip(), "기초 보증금": int(r["기초 보증금"] or 0)}
+        for _, r in _iedit.iterrows() if str(r.get("물건/임차인", "")).strip()
+    ]
+    _items_total = sum(x["기초 보증금"] for x in mi.rental_deposit_items)
+    if _items_total:
+        st.caption(f"기초 보증금 총액(명세 합계): **{_items_total:,}원** — 적수 계산의 기초총액으로 사용")
+        mi.rental_deposit = _items_total
     return True
 
 
@@ -411,6 +547,7 @@ def _render_interest_classifier(mi: ManualInput, journals: list) -> bool:
     df = pd.DataFrame([
         {
             "채권자불분명": _saved_class(ln) == "채권자불분명",
+            "비실명채권증권": _saved_class(ln) == "비실명 채권·증권이자",
             "건설자금": _saved_class(ln) == "건설자금이자",
             "날짜": str(ln.date),
             "계정과목": ln.account_name,
@@ -429,6 +566,10 @@ def _render_interest_classifier(mi: ManualInput, journals: list) -> bool:
             "채권자불분명": st.column_config.CheckboxColumn(
                 "채권자불분명", help="채권자를 확인할 수 없는 사채이자 — 전액 손금불산입 (법§28①1호)",
             ),
+            "비실명채권증권": st.column_config.CheckboxColumn(
+                "비실명 채권·증권", help="소득세법§16①1·2·5·8호 채권·증권이자 중 지급받은 자 불분명 "
+                                  "— 전액 손금불산입 (법§28①2호)",
+            ),
             "건설자금": st.column_config.CheckboxColumn(
                 "건설자금", help="사업용 자산 건설 차입금 이자 — 자본화 (법§28①3호)",
             ),
@@ -441,29 +582,39 @@ def _render_interest_classifier(mi: ManualInput, journals: list) -> bool:
         key="interest_line_editor",
         height=min(400, 60 + 36 * len(df)),
     )
-    # 둘 다 체크된 건은 채권자불분명 우선 (전액 손금불산입이 더 강한 제재)
-    _both = edited["채권자불분명"] & edited["건설자금"]
-    if _both.any():
-        st.warning(f"⚠ {int(_both.sum())}건이 양쪽 모두 체크됨 — 채권자불분명으로 처리합니다.")
+    # 중복 체크는 1호 채권자불분명 > 2호 비실명 > 3호 건설자금 순으로 우선 적용 (영§55)
+    _multi = (
+        edited["채권자불분명"].astype(int) + edited["비실명채권증권"].astype(int)
+        + edited["건설자금"].astype(int)
+    ) > 1
+    if _multi.any():
+        st.warning(f"⚠ {int(_multi.sum())}건이 둘 이상 체크됨 — 채권자불분명 > 비실명 > 건설자금 순으로 처리합니다.")
     _cls = []
     for _, row in edited.iterrows():
         if row["채권자불분명"]:
             _cls.append("채권자불분명")
+        elif row["비실명채권증권"]:
+            _cls.append("비실명 채권·증권이자")
         elif row["건설자금"]:
             _cls.append("건설자금이자")
         else:
             _cls.append("일반 (조정 없음)")
     mi.interest_line_classes = dict(zip(edited["_key"], _cls))
     mi.interest_unknown_creditor = int(edited.loc[edited["채권자불분명"], "금액"].sum())
-    mi.interest_construction = int(
-        edited.loc[edited["건설자금"] & ~edited["채권자불분명"], "금액"].sum()
+    mi.interest_nonreal_name = int(
+        edited.loc[edited["비실명채권증권"] & ~edited["채권자불분명"], "금액"].sum()
     )
-    normal = total_all - mi.interest_unknown_creditor - mi.interest_construction
+    mi.interest_construction = int(
+        edited.loc[edited["건설자금"] & ~edited["채권자불분명"] & ~edited["비실명채권증권"], "금액"].sum()
+    )
+    normal = (total_all - mi.interest_unknown_creditor
+              - mi.interest_nonreal_name - mi.interest_construction)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("이자비용 총액", f"{total_all:,}원")
     c2.metric("채권자불분명 (전액 손不)", f"{mi.interest_unknown_creditor:,}원")
-    c3.metric("건설자금이자 (자본화)", f"{mi.interest_construction:,}원")
+    c3.metric("비실명 채권·증권 (전액 손不)", f"{mi.interest_nonreal_name:,}원")
+    c4.metric("건설자금이자 (자본화)", f"{mi.interest_construction:,}원")
     st.caption(f"일반 이자비용 {normal:,}원은 조정 없이 손금 인정됩니다 (법§28 해당분만 손금불산입).")
     return True
 
@@ -822,11 +973,16 @@ def render_adjustment_data(
     with st.expander("지급이자 (법§28) — 이자비용 전체 분류"):
         if not (journals and _render_interest_classifier(mi, journals)):
             st.caption("분개장에서 이자비용 계정을 찾지 못했습니다 — 직접 입력하세요.")
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             mi.interest_unknown_creditor = int(c1.number_input(
                 "채권자불분명 사채이자 (원)", min_value=0, value=mi.interest_unknown_creditor, step=1_000_000,
+                help="채권자를 확인할 수 없는 사채이자 — 전액 손금불산입 (법§28①1호)",
             ))
-            mi.interest_construction = int(c2.number_input(
+            mi.interest_nonreal_name = int(c2.number_input(
+                "비실명 채권·증권이자 (원)", min_value=0, value=mi.interest_nonreal_name, step=1_000_000,
+                help="소득세법§16①1·2·5·8호 채권·증권이자 중 지급받은 자 불분명 — 전액 손금불산입 (법§28①2호)",
+            ))
+            mi.interest_construction = int(c3.number_input(
                 "건설자금이자 (원)", min_value=0, value=mi.interest_construction, step=1_000_000,
                 help="사업용 유형자산 건설에 소요된 차입금 이자 — 자본화 대상",
             ))
@@ -1046,6 +1202,8 @@ def render_adjustment_data(
             help="수입배당금 익금불산입 비율 결정 (법§18의2). 배당금 자체는 분개장에서 자동 집계",
         )) / 100
         st.caption("간주임대료 — 부동산임대업 주업 + 차입금 과다 법인만 해당 (조특법§138)")
+        # 임대보증금 분개 체크(받은 보증금 식별) + 임대물건별 기초 명세
+        _render_deposit_classifier(mi, journals)
         # 계정별명세서·재무상태표에서 잔액 자동 집계 + 출처 표시
         _bs_deposit, _src_dep = _bs_amount_detail(loader, ("임대보증금", "전세보증금"))
         _bs_debt, _src_debt = _bs_amount_detail(loader, ("단기차입금", "장기차입금", "유동성장기부채"))
@@ -1084,13 +1242,19 @@ def render_adjustment_data(
                 f"건물·구축물 취득가액 {_bs_con:,}원 ← {_src_con} — 아래 기본값으로 반영. "
                 f"**일부만 임대하는 경우 임대용 면적 비율로 수정**하세요 (조특령§132⑥, 토지 제외)"
             )
-        c7, c8 = st.columns(2)
+        c7, c8, c9 = st.columns(3)
         mi.rental_construction_cost = int(c7.number_input(
             "임대용부동산 건설비상당액 (원)", min_value=0,
             value=mi.rental_construction_cost or _bs_con, step=10_000_000,
             help="토지가액 제외한 건물 건설비 (조특령§132⑥). 보증금 적수에서 적수로 차감됩니다.",
         ))
-        mi.rental_financial_income = int(c8.number_input(
+        mi.rental_area_ratio = float(c8.number_input(
+            "임대 면적비율 (0~1)", min_value=0.0, max_value=1.0,
+            value=mi.rental_area_ratio, step=0.01, format="%.2f",
+            help="임대면적 ÷ 전체면적 (조특칙§59). 건설비상당액 적수를 면적 기준으로 안분합니다. "
+                 "0이면 금액비율(건설비÷건물가액)로 폴백. 건물 전체 임대면 1.0.",
+        ))
+        mi.rental_financial_income = int(c9.number_input(
             "보증금 운용 금융수익 (원)", min_value=0,
             value=mi.rental_financial_income, step=1_000_000,
             help="보증금에서 발생한 이자·할인료·배당금 등 (조특령§132⑤). 간주익금에서 차감됩니다.",
@@ -1111,6 +1275,56 @@ def render_adjustment_data(
                     "5단계에서는 분개장으로 **임대보증금·차입금 적수(積數)를 일별 계산**해 "
                     "정산합니다 (조특령§132⑤). 부동산임대업 주업 여부는 1단계 기본정보에서 판정"
                 )
+
+    with st.expander("자산수증익·채무면제익 이월결손금 보전 (법§18 6호, 영§16)"):
+        st.caption(
+            "결손 법인이 무상으로 받은 자산가액(국고보조금 제외)과 채무면제·소멸 이익 중 "
+            "**이월결손금 보전에 충당한 금액은 익금불산입**(손금산입 △, 기타)입니다. "
+            "보전 대상 이월결손금(영§16)은 법§14② 결손금 중 미공제분으로, "
+            "**과세표준 공제기한(15년)이 지난 결손금도 포함**됩니다."
+        )
+        cda, cdb = st.columns(2)
+        mi.asset_gift_revenue = int(cda.number_input(
+            "자산수증이익 (수익 계상액, 원)", min_value=0,
+            value=mi.asset_gift_revenue, step=1_000_000,
+            help="영업외수익으로 계상된 자산수증이익 (국고보조금 등 법§36 대상은 제외)",
+        ))
+        mi.debt_forgiveness_revenue = int(cdb.number_input(
+            "채무면제이익 (수익 계상액, 원)", min_value=0,
+            value=mi.debt_forgiveness_revenue, step=1_000_000,
+            help="채무의 면제·소멸로 인한 부채 감소액 중 수익으로 계상된 금액",
+        ))
+        mi.debt_relief_carryforward = int(st.number_input(
+            "보전에 충당하는 이월결손금 (영§16, 원)", min_value=0,
+            value=mi.debt_relief_carryforward, step=1_000_000,
+            help="보전에 충당하는 이월결손금. 공제기한(15년)이 지난 결손금도 포함 가능 "
+                 "(법§13 과세표준 공제용 이월결손금과 별개). 충당 여부·금액은 납세자 선택",
+        ))
+        _g18 = mi.asset_gift_revenue + mi.debt_forgiveness_revenue
+        if _g18:
+            _off18 = min(_g18, mi.debt_relief_carryforward)
+            st.markdown(
+                f"→ 익금불산입 = min(이익 {_g18:,}원, 이월결손금 {mi.debt_relief_carryforward:,}원) "
+                f"= **{_off18:,}원** (나머지 {_g18 - _off18:,}원은 과세)"
+            )
+        st.divider()
+        st.caption(
+            "아래는 수익으로 계상한 경우에만 입력 — 전액 익금불산입 (법§18 4·5호). "
+            "국세환급가산금·부가세 매출세액을 정상 회계처리했다면 0."
+        )
+        c18a, c18b = st.columns(2)
+        mi.refund_interest_revenue = int(c18a.number_input(
+            "국세환급금 이자 (수익 계상액, 원)", min_value=0,
+            value=mi.refund_interest_revenue, step=100_000,
+            help="국세·지방세 과오납 환급금에 부가된 이자(국세환급가산금)를 잡이익·이자수익으로 "
+                 "계상한 금액 — 전액 익금불산입 (법§18 4호)",
+        ))
+        mi.vat_output_revenue = int(c18b.number_input(
+            "부가가치세 매출세액 (수익 계상액, 원)", min_value=0,
+            value=mi.vat_output_revenue, step=100_000,
+            help="부가세 매출세액을 수익으로 계상한 경우 — 전액 익금불산입 (법§18 5호). "
+                 "정상 회계처리 시 손익 미반영이라 0",
+        ))
 
     with st.expander("부당행위계산 부인 (법§52, 영§88) — 특수관계인 거래 검토"):
         st.caption(
@@ -1154,6 +1368,126 @@ def render_adjustment_data(
             help="시가 자료(감정가액·상증법 평가 등)로 산정한 시가와의 차액 (영§89⑤). "
                  "소득처분은 귀속자에 따라 배당·상여·기타사외유출",
         ))
+
+    with st.expander("세액공제·감면 / 가산세 / 기납부세액 (법§55~64·73, 조특법)"):
+        st.caption(
+            "산출세액 이후 차감 항목입니다. 세액공제·감면은 항목별로 **최저한세 적용 대상 여부**를 "
+            "지정하세요 (조특§132). 최저한세 적용대상 감면은 최저한세에 미달하는 만큼 배제됩니다. "
+            "금액 산식은 항목별 한도 계산이 필요해 자동화하지 않고 수기 입력으로 받습니다."
+        )
+        _n_credit = int(st.number_input(
+            "세액공제·감면 항목 수", min_value=0, max_value=20,
+            value=len(mi.tax_credit_items), step=1,
+        ))
+        _credits: list[dict] = []
+        for _i in range(_n_credit):
+            _prev = mi.tax_credit_items[_i] if _i < len(mi.tax_credit_items) else {}
+            cc1, cc2, cc3, cc4 = st.columns([3, 2, 2, 2])
+            _nm = cc1.text_input(
+                f"항목명 #{_i + 1}", value=str(_prev.get("name", "")),
+                key=f"tc_name_{_i}",
+                placeholder="예: 통합투자세액공제(조특§24)·R&D세액공제(조특§10)·중소기업특별감면(조특§7)",
+            )
+            _amt = int(cc2.number_input(
+                f"공제·감면액 #{_i + 1} (원)", min_value=0,
+                value=int(_prev.get("amount", 0) or 0), step=100_000, key=f"tc_amt_{_i}",
+            ))
+            _smt = cc3.checkbox(
+                f"최저한세 적용 #{_i + 1}", value=bool(_prev.get("subject_to_min_tax", True)),
+                key=f"tc_smt_{_i}",
+                help="조특§132 최저한세 적용대상이면 체크 (대부분의 조특 감면·투자세액공제). "
+                     "R&D세액공제 등 일부는 미적용 — 해당 시 체크 해제",
+            )
+            _spec = lookup_credit_spec(_nm) if _nm else None
+            if _spec:
+                st.caption(
+                    f"📑 **{_spec.article}** 추천 분류 — 최저한세 "
+                    f"**{'적용' if _spec.subject_to_min_tax else '미적용'}** · 농특세 "
+                    f"**{'과세' if _spec.farm_surtax_taxable else '비과세'}** "
+                    f"({_spec.note}) — 체크박스로 최종 확정"
+                )
+            _fst = cc4.checkbox(
+                f"농특세 과세 #{_i + 1}", value=bool(_prev.get("farm_surtax_taxable", False)),
+                key=f"tc_fst_{_i}",
+                help="농어촌특별세 과세대상이면 체크 (감면세액×20%, 농특세법§5①). "
+                     "조특§6·§7 중소기업 세액감면·특별세액감면, R&D세액공제 등은 비과세(농특세법§4) — 체크 해제",
+            )
+            _credits.append({
+                "name": _nm, "amount": _amt,
+                "subject_to_min_tax": _smt, "farm_surtax_taxable": _fst,
+            })
+        mi.tax_credit_items = _credits
+
+        cga, cgb = st.columns(2)
+        mi.surtax_amount = int(cga.number_input(
+            "가산세 합계 (원)", min_value=0, value=mi.surtax_amount, step=100_000,
+            help="무신고·과소신고·납부지연 가산세(국기법§47의2~4) + 지급명세서·계산서 등 "
+                 "불성실 가산세(법§75 계열). 산출세액에 가산. 아래 계산기로 자동 산정 가능",
+        ))
+        mi.prepaid_tax_amount = int(cgb.number_input(
+            "기납부세액 (원)", min_value=0, value=mi.prepaid_tax_amount, step=100_000,
+            help="중간예납세액(법§63) + 원천납부세액(법§73) + 수시부과세액. 차감납부세액에서 차감",
+        ))
+
+        with st.popover("가산세 계산기 (국기법§47의2~4)"):
+            st.caption("무신고와 과소신고는 동시 적용되지 않습니다 — 해당하는 하나만 입력하세요.")
+            _nf_tax = int(st.number_input("무신고납부세액 (원)", min_value=0, value=0, step=100_000, key="sx_nf"))
+            _nf_fraud = st.checkbox("부정행위 (무신고 40%·역외 60%)", key="sx_nf_fraud")
+            _nf_off = st.checkbox("역외거래 부정", key="sx_nf_off")
+            _nf_rev = int(st.number_input("수입금액 (법인 비교용, 원)", min_value=0, value=0, step=10_000_000, key="sx_rev"))
+            _ur_tax = int(st.number_input("과소신고납부세액 (원)", min_value=0, value=0, step=100_000, key="sx_ur"))
+            _ur_fraud = int(st.number_input("그 중 부정행위분 (원)", min_value=0, value=0, step=100_000, key="sx_ur_fraud"))
+            _lp_tax = int(st.number_input("미납·과소납부세액 (원)", min_value=0, value=0, step=100_000, key="sx_lp"))
+            _lp_days = int(st.number_input("미납 일수", min_value=0, value=0, step=1, key="sx_days"))
+            _other = int(st.number_input("기타 가산세 (법§75 계열 수기 합산, 원)", min_value=0, value=0, step=100_000, key="sx_other"))
+            _sr = aggregate_surtax(
+                no_filing_tax=_nf_tax, no_filing_fraud=_nf_fraud, no_filing_offshore=_nf_off,
+                revenue=_nf_rev,
+                under_report_tax=_ur_tax, under_report_fraud_portion=_ur_fraud,
+                unpaid_tax=_lp_tax, unpaid_days=_lp_days, other_manual=_other,
+            )
+            st.markdown(
+                f"무신고 {_sr.no_filing:,} · 과소신고 {_sr.under_report:,} · "
+                f"납부지연 {_sr.late_payment:,} · 기타 {_sr.other_manual:,} = **합계 {_sr.total:,}원**"
+            )
+            if st.button("위 합계를 가산세로 적용", key="sx_apply"):
+                mi.surtax_amount = _sr.total
+                st.success(f"가산세 {_sr.total:,}원을 적용했습니다. 위 '가산세 합계'에 반영됩니다.")
+        if _credits or mi.surtax_amount or mi.prepaid_tax_amount:
+            _tc_sum = sum(c["amount"] for c in _credits)
+            st.caption(
+                f"세액공제·감면 합계 {_tc_sum:,}원 · 가산세 {mi.surtax_amount:,}원 · "
+                f"기납부세액 {mi.prepaid_tax_amount:,}원 → 5단계 차감납부세액에 반영됩니다."
+            )
+
+        st.divider()
+        st.caption(
+            "토지등 양도소득에 대한 법인세 (법§55의2) — 비사업용토지·주택·별장·조합원입주권·분양권 "
+            "양도 시 일반 법인세에 **추가 납부**(최저한세·세액공제 대상 아님). 해당 없으면 0."
+        )
+        clt1, clt2, clt3 = st.columns([2, 2, 1])
+        mi.land_transfer_income = int(clt1.number_input(
+            "토지등 양도소득 (원)", min_value=0, value=mi.land_transfer_income, step=1_000_000,
+            help="양도가액 − 장부가액 등으로 계산한 양도소득",
+        ))
+        _lt_types = ["비사업용토지", "주택별장", "조합원입주권분양권"]
+        mi.land_transfer_type = clt2.selectbox(
+            "자산 유형", _lt_types,
+            index=_lt_types.index(mi.land_transfer_type) if mi.land_transfer_type in _lt_types else 0,
+            help="비사업용토지 10% · 주택/별장 20% · 조합원입주권/분양권 20% (미등기 비사업용토지·주택별장 40%)",
+        )
+        mi.land_transfer_unregistered = clt3.checkbox(
+            "미등기", value=mi.land_transfer_unregistered,
+            help="미등기 양도 — 비사업용토지·주택별장은 40% 적용 (법§55의2① 2·3호)",
+        )
+        if mi.land_transfer_income:
+            _lt_rate = {"비사업용토지": (0.10, 0.40), "주택별장": (0.20, 0.40),
+                        "조합원입주권분양권": (0.20, 0.20)}.get(mi.land_transfer_type, (0.0, 0.0))
+            _r = _lt_rate[1] if mi.land_transfer_unregistered else _lt_rate[0]
+            st.markdown(
+                f"→ 토지등 양도소득 법인세 = {mi.land_transfer_income:,}원 × {_r:.0%} "
+                f"= **{int(mi.land_transfer_income * _r):,}원** (일반 법인세에 추가)"
+            )
 
 
 def render_prior_reserves(existing: list | None = None) -> list[dict]:

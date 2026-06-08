@@ -75,6 +75,26 @@ def render(proj) -> None:
         existing=proj.manual_input.carryforward_losses,
     )
 
+    # ── 비과세소득·소득공제 (법§13①2호·3호) — 과세표준에서 차감 ──
+    st.markdown(section_title(
+        "비과세소득·소득공제 (법§13①)",
+        "과세표준 = 각사업연도소득 − 이월결손금 − 비과세소득 − 소득공제. "
+        "분개로 자동 파악되지 않아 직접 입력합니다. 해당 없으면 0.",
+    ), unsafe_allow_html=True)
+    _ntc1, _ntc2 = st.columns(2, gap="medium")
+    proj.manual_input.non_taxable_income = int(_ntc1.number_input(
+        "비과세소득 (원)", min_value=0,
+        value=int(proj.manual_input.non_taxable_income or 0), step=1_000_000,
+        help="법§51(공익신탁 신탁재산 소득) 등 — 항목별 근거 법령을 검토조서에 기록. "
+             "당기 미공제분은 차기 이월 불가(법§13②, 한도 초과 시 소멸).",
+    ))
+    proj.manual_input.income_deduction = int(_ntc2.number_input(
+        "소득공제 (원)", min_value=0,
+        value=int(proj.manual_input.income_deduction or 0), step=1_000_000,
+        help="법§13①3호 — 이 법·다른 법률에 따른 소득공제(예: 유동화전문회사 배당 소득공제 "
+             "조특§104의31 등). 당기 미공제분은 소멸(법§13②).",
+    ))
+
     st.divider()
 
     st.markdown(section_title(
@@ -110,6 +130,30 @@ def render(proj) -> None:
         else:
             st.caption(f"고정자산대장 자산별 부인누계 합계: {_fa_denial_sum:,}원 (전기 신고서와 대사 권장)")
 
+    # ── 전기 유보 당기 추인 → 소득금액 반영 (회계사 명시 입력) ──
+    st.markdown(section_title(
+        "전기 유보 당기 추인 (소득금액 반영)",
+        "전기 유보·△유보가 당기에 추인(환입)되어 소득금액에 영향을 주는 금액을 입력합니다. "
+        "유보 추인 → 손금산입(△유보), △유보 추인 → 익금산입(유보).",
+    ), unsafe_allow_html=True)
+    st.caption(
+        "⚠ **감가상각 부인누계 추인**(엔진 자동 반영)과 **기부금 이월**(별도 처리)은 "
+        "여기에 넣지 마세요 — 이중계상됩니다. **대손충당금 총액법** 전기 한도초과 환입"
+        "(법§34③, 손금산입)은 여기에 포함합니다. 위 자본금과적립금조정명세서(을)의 "
+        "'당기감소(추인)' 합계와 대조하여 입력하세요."
+    )
+    _rrc1, _rrc2 = st.columns(2, gap="medium")
+    proj.manual_input.prior_reserve_reversal_deduct = int(_rrc1.number_input(
+        "전기 유보 추인 — 손금산입(△유보) (원)", min_value=0,
+        value=int(proj.manual_input.prior_reserve_reversal_deduct or 0), step=1_000_000,
+        help="전기에 손금불산입(유보)된 금액의 당기 추인 — 손금산입. 감가상각 제외.",
+    ))
+    proj.manual_input.prior_reserve_reversal_add = int(_rrc2.number_input(
+        "전기 △유보 추인 — 익금산입(유보) (원)", min_value=0,
+        value=int(proj.manual_input.prior_reserve_reversal_add or 0), step=1_000_000,
+        help="전기에 익금불산입(△유보)된 금액의 당기 추인 — 익금산입.",
+    ))
+
     st.divider()
 
     st.markdown(section_title(
@@ -123,6 +167,20 @@ def render(proj) -> None:
         loader=st.session_state.loader,
         related_parties=proj.manual_input.related_parties,
     )
+
+    st.divider()
+
+    st.markdown(section_title(
+        "수입금액 보정 (기업업무추진비 한도)",
+        "기업업무추진비 한도의 분모인 수입금액(영§42① 기업회계기준 매출액)을 보정합니다. "
+        "0이면 매출계정 자동집계를 사용합니다.",
+    ), unsafe_allow_html=True)
+    proj.manual_input.revenue_manual = int(st.number_input(
+        "수입금액 보정값 (원) — 0이면 자동집계 사용", min_value=0,
+        value=int(proj.manual_input.revenue_manual or 0), step=10_000_000,
+        help="파서가 매출 계정을 누락·오분류한 경우에만 보정하세요(영§42① 기업회계기준 매출액 기준). "
+             "임의 가산 금지 — 보정 시 출처를 검토조서에 기록.",
+    ))
 
     st.divider()
 
@@ -174,6 +232,15 @@ def render(proj) -> None:
             format="%.4f",
         )
         proj.manual_input.actual_bad_debt_rate = new_bad
+
+        proj.manual_input.bad_debt_method = st.radio(
+            "대손충당금 처리방식",
+            ["총액법", "보충법"],
+            index=(1 if proj.manual_input.bad_debt_method == "보충법" else 0),
+            horizontal=True,
+            help="유보 잔액표(을)의 증감 표기 기준 — 총액법(법§34③ 기본): 전기 충당금 전액 환입 후 "
+                 "당기 재설정 / 보충법: 전기 유보 이월·증감분만 조정(추인은 검토). 기말 유보 잔액은 동일.",
+        )
 
     st.divider()
 

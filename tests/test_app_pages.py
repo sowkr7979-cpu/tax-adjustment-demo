@@ -7,7 +7,7 @@ from streamlit.testing.v1 import AppTest
 APP = "src/app.py"
 PAGES = [
     "1. 기본정보", "2. 파일 업로드", "3. 수기 입력",
-    "4. LLM 분석", "5. 계산·검토", "6. 출력",
+    "4. AI 검토 보조", "5. 계산·검토", "6. 출력",
 ]
 
 
