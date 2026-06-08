@@ -1,6 +1,8 @@
 ﻿# 비밀키 — 절대 커밋·공유 금지
 .env
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+*.lock
 
 # Python
 __pycache__/

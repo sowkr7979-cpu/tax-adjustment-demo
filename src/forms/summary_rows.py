@@ -50,14 +50,48 @@ def adjustment_rows(
         ("손금불산입", "기부금 한도초과·비지정",    r.donation_excess,          "법§24",    "기타사외유출"),
         ("손금불산입", "유가증권 평가손실",         r.securities_loss_disallowed, "영§75",  "유보"),
         ("손금불산입", "재고자산 평가 조정",        r.inventory_adjustment,     "영§74",    "유보"),
-        ("손금불산입", "복리후생비 (열거 외)",      r.welfare_disallowed,       "영§45",    _disp("복리후생비 (열거 외)", "상여 등")),
         ("손금불산입", "공동경비 분담 초과",        r.joint_expense_excess,     "영§48",    "기타사외유출"),
         ("손금불산입", "업무무관비용",             r.non_business_expense,     "법§27",    "기타사외유출"),
         ("손금불산입", "징벌적 손해배상금",         r.punitive_damages,         "법§21의2", "기타사외유출"),
         ("익금산입",   "간주임대료",               r.deemed_rental,            "조특법§138", "기타사외유출"),
-        ("익금산입",   "부당행위계산 부인",         r.unfair_transaction,       "법§52, 영§88", _disp("부당행위계산 부인", "배당·상여 등")),
         ("익금산입",   "전기 △유보 추인",          r.prior_reserve_reversal_add, "법§34③ 등", "유보"),
     ]
+
+    # 부당행위계산 부인 — 건별 소득처분(영§106). 건별 내역 있으면 건별 행, 없으면 단일 행.
+    _unfair_lines = getattr(r, "unfair_transaction_lines", None) or []
+    if _unfair_lines and sum(int(x.get("amount", 0)) for x in _unfair_lines) == r.unfair_transaction:
+        for _x in _unfair_lines:
+            _ref = str(_x.get("ref", "")).strip()
+            _label = "부당행위계산 부인" + (f" ({_ref})" if _ref else "")
+            add_items.append(("익금산입", _label, int(_x.get("amount", 0)),
+                              _x.get("basis", "법§52, 영§88③"),
+                              _x.get("disposition", "검토필요")))
+    elif r.unfair_transaction:
+        add_items.append(("익금산입", "부당행위계산 부인", r.unfair_transaction,
+                          "법§52, 영§88", _disp("부당행위계산 부인", "배당·상여 등")))
+
+    # 복리후생비(열거 외) — 건별 소득처분(영§45·106). 건별 내역 있으면 건별 행.
+    _welfare_lines = getattr(r, "welfare_disallowed_lines", None) or []
+    if _welfare_lines and sum(int(x.get("amount", 0)) for x in _welfare_lines) == r.welfare_disallowed:
+        for _x in _welfare_lines:
+            _ref = str(_x.get("ref", "")).strip()
+            _label = "복리후생비 (열거 외)" + (f" ({_ref})" if _ref else "")
+            add_items.append(("손금불산입", _label, int(_x.get("amount", 0)),
+                              _x.get("basis", "영§45①"), _x.get("disposition", "검토필요")))
+    elif r.welfare_disallowed:
+        add_items.append(("손금불산입", "복리후생비 (열거 외)", r.welfare_disallowed,
+                          "영§45", _disp("복리후생비 (열거 외)", "상여 등")))
+
+    # 의제배당 (법§16①) — 사유별 익금산입. 자기 익금이라 소득처분 不요(유보 또는 -).
+    _dd_lines = getattr(r, "deemed_dividend_lines", None) or []
+    if _dd_lines and sum(int(x.get("amount", 0)) for x in _dd_lines) == r.deemed_dividend:
+        for _x in _dd_lines:
+            _ref = str(_x.get("ref", "")).strip()
+            _label = "의제배당" + (f" ({_ref})" if _ref else "")
+            add_items.append(("익금산입", _label, int(_x.get("amount", 0)),
+                              _x.get("basis", "법§16①"), _x.get("disposition") or "유보"))
+    elif getattr(r, "deemed_dividend", 0):
+        add_items.append(("익금산입", "의제배당", r.deemed_dividend, "법§16①", "유보"))
 
     # 채권자불분명 사채이자 — 원천세 상당액=기타사외유출 / 잔액=대표자상여 (영§106)
     if r.interest_unknown_creditor:

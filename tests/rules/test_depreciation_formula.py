@@ -74,3 +74,52 @@ def test_rate_missing_fallback():
     r = calc_depreciation(a)
     assert r.rate_missing
     assert r.tax_limit == 7_000_000
+
+
+def test_bibang_not_triggered_in_normal_year():
+    """미상각잔액이 취득가액 5%보다 충분히 클 때는 통상 정률 산식 — 특례 미발동."""
+    # 취득가액 1억, 미상각잔액 6천만(60%) → 통상상각 후 잔액 36M ≫ 5%(5M)
+    a = _asset(method="정률법", book_value_start=60_000_000,
+               new_acquisition=40_000_000, depr_rate=0.4, company_depr=24_000_000)
+    r = calc_depreciation(a)
+    assert not r.bibang_applied
+    assert r.tax_limit == 40_000_000  # base(1억) × 0.4 — 신규취득 포함 미상각잔액
+
+
+def test_bibang_triggered_writes_down_to_1000():
+    """미상각잔액이 취득가액 5% 이하가 되는 해 → 비망가액 1,000원 남기고 전액 상각 (영§26⑥⑦)."""
+    # 취득가액 1억, 미상각잔액 800만(8%). 통상상각: 800만×0.4=320만 → 잔액 480만 ≤ 5%(500만) → 발동
+    a = _asset(method="정률법", book_value_start=8_000_000,
+               accumulated_depr_start=92_000_000,  # 취득가액 = 8M + 92M = 1억
+               depr_rate=0.4, company_depr=8_000_000)
+    r = calc_depreciation(a)
+    assert r.bibang_applied
+    # 상각범위액 = 미상각잔액 800만 − min(취득가액×5%=500만, 1,000원) = 800만 − 1,000 = 7,999,000
+    assert r.tax_limit == 7_999_000
+    assert r.excess == 1_000  # 회사계상 800만 − 한도 7,999,000
+
+
+def test_bibang_small_asset_uses_5pct_when_below_1000():
+    """취득가액 2만원 이하 소액자산: 비망가액 = 취득가액×5% (< 1,000원) — 하드코딩 금지 검증."""
+    # 취득가액 20,000, 5% = 1,000 경계보다 작게: 취득가액 10,000 → 5% = 500
+    a = _asset(method="정률법", book_value_start=800,
+               accumulated_depr_start=9_200,  # 취득가액 = 800 + 9,200 = 10,000
+               depr_rate=0.4, company_depr=800)
+    r = calc_depreciation(a)
+    assert r.bibang_applied
+    # 비망가액 = min(10,000×5%=500, 1,000) = 500 → 한도 = 800 − 500 = 300
+    assert r.tax_limit == 300
+
+
+def test_bibang_not_triggered_for_partial_year():
+    """월할(months<12) 자산은 비망가액 특례 미발동 — 처분/취득연도 과대상각 방지 (통상 산식)."""
+    # 발동 조건을 만족(잔액 8% → 통상상각 후 ≤5%)하지만 months=6이면 발동 안 함
+    a = _asset(method="정률법", book_value_start=8_000_000,
+               accumulated_depr_start=92_000_000, depr_rate=0.4,
+               months=6, company_depr=1_600_000)
+    r = calc_depreciation(a)
+    assert not r.bibang_applied
+    # 통상 월할 산식: 800만 × 0.4 × 6/12 = 160만
+    assert r.tax_limit == 1_600_000
+    # 비망가액 임계 근처 월할 자산 → 처분/단기사업연도 회계사 확인 플래그 (영§26⑨·법§55의2 체계)
+    assert r.bibang_partial_review

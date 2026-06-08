@@ -24,6 +24,7 @@ LAW_NATIONAL_TAX_BASIC = "001586"  # 국세기본법
 ADJUSTMENT_LEGAL_BASIS: dict[str, tuple[str, str, str]] = {
     # ── 가산조정 (익금산입·손금불산입) ──
     "depreciation_excess":       ("법인세법 제23조 (감가상각비의 손금불산입)",        LAW_CORP_TAX,        "002300"),
+    "depreciation_bibang_residual": ("법인세법 시행령 제26조제6항·제7항 (정률법 비망가액 — 취득가액 5%·1천원)", LAW_CORP_TAX_DECREE, "002600"),
     "entertainment_excess":      ("법인세법 제25조 (기업업무추진비의 손금불산입)",     LAW_CORP_TAX,        "002500"),
     "entertainment_no_receipt":  ("법인세법 제25조제2항 (적격증빙 미수취)",           LAW_CORP_TAX,        "002500"),
     "donation_excess":           ("법인세법 제24조 (기부금의 손금불산입)",            LAW_CORP_TAX,        "002400"),
@@ -52,6 +53,7 @@ ADJUSTMENT_LEGAL_BASIS: dict[str, tuple[str, str, str]] = {
     "punitive_damages":          ("법인세법 제21조의2 (징벌적 목적의 손해배상금)",      LAW_CORP_TAX,        "002102"),
     "deemed_interest":           ("법인세법 시행령 제89조 (시가의 범위 등·인정이자)",  LAW_CORP_TAX_DECREE, "008900"),
     "unfair_transaction":        ("법인세법 제52조 (부당행위계산의 부인)",            LAW_CORP_TAX,        "005200"),
+    "deemed_dividend":           ("법인세법 제16조 (배당금 또는 분배금의 의제)",       LAW_CORP_TAX,        "001600"),
     "deemed_rental":             ("조세특례제한법 제138조 (임대보증금 등의 간주익금)",  LAW_SPECIAL_TAX,     "013800"),
     # ── 차감조정 (손금산입·익금불산입) ──
     "depreciation_approved":     ("법인세법 제23조 (전기 부인액 추인)",               LAW_CORP_TAX,        "002300"),

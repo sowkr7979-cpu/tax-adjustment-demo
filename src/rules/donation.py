@@ -118,6 +118,44 @@ def eligible_donation_carryforward(
     return sorted(out, key=lambda x: x["year"])
 
 
+def donation_carryforward_schedule(
+    carryforwards: list[dict],
+    fiscal_year_end_year: int,
+    special_used: int,
+    general_used: int,
+) -> list[dict]:
+    """발생연도별 이월 기부금 명세 — 기부금조정명세서(별지 제21호) 이월명세 섹션용.
+
+    반환: [{year, type, opening, used, expired, carryover}] (발생연도 오름차순, 종류별).
+      opening   전기말 이월잔액 (당기초)
+      used      당기 손금산입 (이월 우선공제, 선발생분부터 — 법§24⑥)
+      expired   당기 소멸 (공제기한 10년 초과 — 법§24⑤). 조용히 사라지지 않게 명시.
+      carryover 차기 이월 (= opening − used − expired)
+    각 행 항등식: opening = used + expired + carryover. 종류별 Σused = *_used 입력값.
+    """
+    rows: list[dict] = []
+    for kind, used_total in (("특례", special_used), ("일반", general_used)):
+        items = sorted(
+            [{"year": int(it["year"]), "amount": int(it["amount"])}
+             for it in (carryforwards or [])
+             if str(it.get("type")) == kind and it.get("year") and it.get("amount")],
+            key=lambda x: x["year"],
+        )
+        remaining_used = used_total
+        for it in items:
+            yr, amt = it["year"], it["amount"]
+            if (fiscal_year_end_year - yr) > DONATION_CARRYFORWARD_YEARS:
+                # 공제기한 초과 → 당기 소멸 (공제·이월 불가)
+                rows.append({"year": yr, "type": kind, "opening": amt,
+                             "used": 0, "expired": amt, "carryover": 0})
+                continue
+            use = min(amt, remaining_used)
+            remaining_used -= use
+            rows.append({"year": yr, "type": kind, "opening": amt,
+                         "used": use, "expired": 0, "carryover": amt - use})
+    return rows
+
+
 def roll_forward(
     eligible_sorted: list[dict],
     used: int,

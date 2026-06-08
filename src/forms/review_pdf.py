@@ -16,6 +16,7 @@ from fpdf import FPDF
 
 from src.forms.summary_rows import adjustment_rows, adj_type
 from src.forms.reserve_status import build_reserve_status, reserve_totals
+from src.forms.donation_status import build_donation_status
 
 _FONT_REG = Path(r"C:\Windows\Fonts\malgun.ttf")
 _FONT_BOLD = Path(r"C:\Windows\Fonts\malgunbd.ttf")
@@ -26,6 +27,9 @@ _HEAD = (29, 29, 31)
 # 세목별 근거분개 표에 인쇄할 최대 분개 수 (초과분은 앱 CSV 안내) — PDF 분량 관리
 # 500건 이내면 종이 검토용으로 전부 인쇄, 초과 시 금액 상위 500건만 표시
 JOURNAL_LINE_CAP = 500
+
+# ④ 전수 검토 체크리스트의 '검토필요' 항목에 붙이는 근거분개 최대 수 (금액 큰 순)
+CHECKLIST_JOURNAL_CAP = 100
 
 
 def book_tax_lines(detail: dict) -> list[str]:
@@ -190,6 +194,7 @@ def build_review_pdf(
     reserve_manual_rows: list[dict] | None = None,
     disposition_choices: dict | None = None,
     consulting_topics: list | None = None,
+    donation_status: dict | None = None,
 ) -> bytes:
     fy_label = f"{fy_start} ~ {fy_end}"
     pdf = _ReviewPDF(company_name or "(회사명 미입력)", fy_label)
@@ -268,6 +273,47 @@ def build_review_pdf(
                            "※ '추인확인' 항목은 전기 유보가 있으나 당기 추인(감소)이 자동 반영되지 않았습니다 — "
                            "환입·추인 여부를 확인해 당기 감소를 보정하세요.",
                            new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_HEAD)
+
+    # ── ②-3 기부금조정명세서 (별지 제21호서식) ─────────────────────────────────
+    _dstat = build_donation_status(donation_status)
+    if _dstat:
+        _h2(pdf, "2-3. 기부금조정명세서 (별지 제21호서식)")
+        _body_font(pdf, 8)
+        pdf.multi_cell(
+            0, 4.6,
+            f"기준소득금액 {_dstat['base_income']:,}원 - 이월결손금 공제 "
+            f"{_dstat['loss_deduction']:,}원 = 한도기준 {_dstat['limit_base']:,}원",
+            new_x="LMARGIN", new_y="NEXT")
+        # ① 한도계산
+        _body_font(pdf, 8, bold=True)
+        pdf.multi_cell(0, 4.8, "  ① 한도 계산", new_x="LMARGIN", new_y="NEXT")
+        _simple_table(
+            pdf, ["구분", "지출액", "이월 우선공제", "손금산입한도", "한도율", "당기 한도초과"],
+            [[c["구분"], f"{c['지출액']:,}", f"{c['이월 우선공제']:,}",
+              f"{c['손금산입한도']:,}", c["한도율"], f"{c['당기 한도초과']:,}"]
+             for c in _dstat["limit_calc"]],
+            widths=[24, 22, 24, 24, 12, 24], size=7.5,
+        )
+        # ② 발생연도별 이월명세 (소멸 명시)
+        if _dstat["carryforward_schedule"]:
+            _body_font(pdf, 8, bold=True)
+            pdf.multi_cell(0, 4.8, "  ② 발생연도별 이월명세 (법§24⑤⑥)", new_x="LMARGIN", new_y="NEXT")
+            _simple_table(
+                pdf, ["발생연도", "구분", "전기말 이월", "당기 공제", "당기 소멸", "차기 이월", "발생구분"],
+                [[str(r["year"]), r["type"], f"{r['opening']:,}", f"{r['used']:,}",
+                  f"{r['expired']:,}", f"{r['carryover']:,}", r["발생구분"]]
+                 for r in _dstat["carryforward_schedule"]],
+                widths=[16, 12, 22, 20, 18, 20, 16], size=7.0,
+            )
+            _body_font(pdf, 7.5)
+            pdf.set_text_color(134, 134, 139)
+            pdf.multi_cell(
+                0, 4.0,
+                f"  이월 당기 손금산입 {_dstat['carryforward_deduction']:,}원 · "
+                f"당기 소멸 {_dstat['expired_total']:,}원 · 차기 이월 {_dstat['next_carryforward_total']:,}원 — "
+                + _dstat["balance_note"],
+                new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(*_HEAD)
 
     # ── ③ 세목별 세무조정 (Book / Tax / 세무조정·소득처분 + 근거분개) ────────────
@@ -349,6 +395,71 @@ def build_review_pdf(
         _simple_table(pdf, ["상태", "위험도", "조정 항목", "법령", "관련 금액", "내역/필요 자료"],
                       cov_rows, widths=[9, 9, 20, 12, 13, 37], size=7.5)
 
+    # 4-2. '검토필요' 항목별 근거법령·검토포인트 (law.go.kr 원문 검증 — 4-1 분개보다 앞: 법령 이해→분개 확인)
+    _law_items = [
+        c for c in sorted(coverage, key=lambda x: -x.amount_hint)
+        if c.status == "검토필요" and getattr(c, "interpretation", "")
+    ]
+    if _law_items:
+        pdf.ln(2)
+        _body_font(pdf, 8.5, bold=True)
+        pdf.set_text_color(*_HEAD)
+        pdf.multi_cell(0, 5, "4-2. 검토필요 항목 근거법령·검토포인트", new_x="LMARGIN", new_y="NEXT")
+        _body_font(pdf, 7.5)
+        pdf.set_text_color(134, 134, 139)
+        pdf.multi_cell(
+            0, 4,
+            "※ 각 검토필요 항목의 근거 조문과 검토 포인트입니다(국가법령정보 원문 기준). "
+            "적용·확정은 회계사 판단이며, 조문 원문은 앱 5단계에서 조회할 수 있습니다.",
+            new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*_HEAD)
+        for c in _law_items:
+            _body_font(pdf, 8, bold=True)
+            pdf.multi_cell(0, 4.8, f"■ {c.item}  [{c.legal_basis}]", new_x="LMARGIN", new_y="NEXT")
+            _body_font(pdf, 7.5)
+            pdf.set_text_color(70, 70, 75)
+            pdf.multi_cell(0, 4.3, f"  검토포인트: {c.interpretation}", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_HEAD)
+            pdf.ln(0.8)
+
+    # 4-1. '검토필요' 항목별 근거분개 — 회계사가 직접 들여다볼 분개를 첨부 (금액 큰 순 100건)
+    _review_items = [
+        c for c in sorted(coverage, key=lambda x: -x.amount_hint)
+        if c.status == "검토필요" and getattr(c, "lines", None)
+    ]
+    if _review_items:
+        pdf.ln(2)
+        _body_font(pdf, 8.5, bold=True)
+        pdf.set_text_color(*_HEAD)
+        pdf.multi_cell(0, 5, "4-1. 검토필요 항목 근거분개 (금액 큰 순)", new_x="LMARGIN", new_y="NEXT")
+        _body_font(pdf, 7.5)
+        pdf.set_text_color(134, 134, 139)
+        pdf.multi_cell(
+            0, 4,
+            f"※ 상태 '검토필요' 항목에 매칭된 분개를 항목당 금액 상위 {CHECKLIST_JOURNAL_CAP}건까지 첨부합니다 "
+            "(자동계산·해당없음 항목 제외). 전체 분개는 앱 5단계 CSV 참조.",
+            new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*_HEAD)
+        for c in _review_items:
+            _lines = c.lines
+            _body_font(pdf, 8, bold=True)
+            pdf.multi_cell(0, 4.8, f"■ {c.item}  [{c.legal_basis}]  ({len(_lines):,}건)",
+                           new_x="LMARGIN", new_y="NEXT")
+            _simple_table(
+                pdf, ["날짜", "계정과목", "적요", "거래처", "차변", "대변"],
+                _journal_rows_for_pdf(_lines, cap=CHECKLIST_JOURNAL_CAP),
+                widths=[14, 22, 30, 20, 17, 17], size=7.0,
+            )
+            if len(_lines) > CHECKLIST_JOURNAL_CAP:
+                _body_font(pdf, 7.0)
+                pdf.set_text_color(134, 134, 139)
+                pdf.multi_cell(
+                    0, 4.0,
+                    f"  ※ 전체 {len(_lines):,}건 중 금액 상위 {CHECKLIST_JOURNAL_CAP}건만 표시",
+                    new_x="LMARGIN", new_y="NEXT")
+                pdf.set_text_color(*_HEAD)
+            pdf.ln(1.5)
+
     # ── ⑤ 자료요청 리스트 ────────────────────────────────────────────────────
     pdf.add_page()
     _h2(pdf, f"5. 고객 자료요청 리스트 ({len(requests)}건)")
@@ -400,17 +511,36 @@ def build_review_pdf(
                        "회계사가 요건 검토 후 채택·확정합니다 (AI가 적용을 확정하지 않습니다).",
                        new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*_HEAD)
+        from src.rules.consulting import SCENARIO_DISCLAIMER
+        from src.rag.reference_retriever import format_reference
         for _t in consulting_topics:
             _body_font(pdf, 9, bold=True)
             pdf.multi_cell(0, 5.5, f"[{_t.category}·{_t.severity}] {_t.title}",
                            new_x="LMARGIN", new_y="NEXT")
             _body_font(pdf, 8)
-            pdf.multi_cell(0, 4.5, f"  발견: {_t.finding}", new_x="LMARGIN", new_y="NEXT")
-            pdf.multi_cell(0, 4.5, f"  권고: {_t.suggestion}", new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 4.5, f"  현재상황: {_t.situation}", new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 4.5, f"  근거: {_t.basis}", new_x="LMARGIN", new_y="NEXT")
+            _body_font(pdf, 8, bold=True)
+            pdf.multi_cell(0, 4.6, f"  결론 — 시나리오 ({SCENARIO_DISCLAIMER})",
+                           new_x="LMARGIN", new_y="NEXT")
+            _body_font(pdf, 8)
+            for _sc in (getattr(_t, "scenarios", None) or []):
+                _chk = " [회계사 확인 필요]" if _sc.needs_law_check else ""
+                pdf.multi_cell(0, 4.4, f"  · {_sc.name}{_chk}", new_x="LMARGIN", new_y="NEXT")
+                pdf.multi_cell(0, 4.2, f"      행동: {_sc.action}", new_x="LMARGIN", new_y="NEXT")
+                pdf.multi_cell(0, 4.2, f"      효과: {_sc.effect}", new_x="LMARGIN", new_y="NEXT")
+                if _sc.requirement:
+                    pdf.multi_cell(0, 4.2, f"      요건: {_sc.requirement}", new_x="LMARGIN", new_y="NEXT")
+                if _sc.risk:
+                    pdf.multi_cell(0, 4.2, f"      리스크: {_sc.risk}", new_x="LMARGIN", new_y="NEXT")
             _body_font(pdf, 7.5)
             pdf.set_text_color(134, 134, 139)
-            pdf.multi_cell(0, 4, f"  근거: {_t.legal_basis} · {_t.status}",
+            pdf.multi_cell(0, 4, f"  법령 근거: {_t.legal_basis} · {_t.status}",
                            new_x="LMARGIN", new_y="NEXT")
+            # 참고자료 발췌 (국세청 참고파일 RAG — 검토 근거 자료, 미확정)
+            for _ref in (getattr(_t, "references", None) or []):
+                pdf.multi_cell(0, 4, f"  └ 참고자료: {format_reference(_ref)}",
+                               new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(*_HEAD)
             pdf.ln(1)
 

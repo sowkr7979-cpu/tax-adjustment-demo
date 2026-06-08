@@ -36,7 +36,34 @@ def test_gajigeup_topic_triggers():
     g = next(t for t in topics if t.title == "특수관계인 가지급금 정리")
     assert g.category == "리스크" and g.severity == "높음"
     assert "검토필요" in g.status  # ADR-002 — 항상 미확정
-    assert "5,000,000" in g.finding
+    assert "5,000,000" in g.situation
+
+
+def test_topic_has_concrete_scenarios():
+    """결론이 '검토바람'이 아니라 복수 시나리오(행동·효과)로 제시된다 (ADR-002 — 옵션 다수)."""
+    topics = _topics(result=_result(deemed_interest=5_000_000))
+    g = next(t for t in topics if t.title == "특수관계인 가지급금 정리")
+    assert len(g.scenarios) >= 2          # 단일 결론 금지 — 복수 대안
+    sc = g.scenarios[0]
+    assert sc.name and sc.action and sc.effect
+    # 시나리오에 "검토바람"으로 끝나는 공허한 결론이 없어야 한다
+    assert not g.scenarios[-1].action.strip().endswith("검토바랍니다")
+
+
+def test_employment_credit_efyd_branch():
+    """고용 세액공제 시나리오: 2024 이전은 조특§29의7, 2025 이후는 §29의8 (efYd 분기)."""
+    from datetime import date as _d
+
+    def _emp_scenario(fy_end):
+        topics = build_consulting_topics(
+            company=CompanyInfo(is_sme=True), manual_input=ManualInput(),
+            result=_result(), fiscal_year_end=fy_end,
+        )
+        sme = next(t for t in topics if t.title == "중소기업 세액감면·공제 적용 검토")
+        return " ".join(s.requirement + s.name for s in sme.scenarios)
+
+    assert "29의7" in _emp_scenario(_d(2024, 12, 31))
+    assert "29의8" in _emp_scenario(_d(2025, 12, 31))
 
 
 def test_sme_topic_only_for_sme():

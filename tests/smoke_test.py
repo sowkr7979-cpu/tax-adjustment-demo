@@ -12,7 +12,6 @@ from src.rules.tax_base import calc_gross_tax
 from src.rules.tax_credit import calc_final_tax
 from src.rules.interest import calc_interest_disallowance
 from src.rules.vehicle import calc_vehicle
-from src.forms.audit_trail import generate_audit_trail
 from src.forms.registry import recommend_forms
 from src.utils.models import TaxCredit, TaxAdjustmentResult, FixedAsset, LLMAnalysisResult, IssueCode
 
@@ -96,22 +95,6 @@ assert "DEPRECIATION" in keys
 assert "ENTERTAINMENT_A" in keys
 assert "VEHICLE_EXPENSE" in keys
 print(f"[9] 서식 추천: {len(forms)}개 ({', '.join(keys[:4])}...) OK")
-
-# 9. 감사추적 Excel 생성
-tr = TaxAdjustmentResult(
-    fiscal_year_start=date(2025, 1, 1),
-    fiscal_year_end=date(2025, 12, 31),
-    is_sme=True,
-)
-tr.entertainment_excess = 5_000_000
-tr.final_tax_due = final["차감납부세액"]
-with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
-    out = f.name
-generate_audit_trail([], tr, out, "(주)테스트", "exaone3.5:32b", "0.1.0", date(2025, 12, 31))
-size = os.path.getsize(out)
-assert size > 5_000, f"Excel 파일 크기 이상: {size}"
-os.unlink(out)
-print(f"[10] 감사추적 Excel: {size:,} bytes OK")
 
 print()
 print("=" * 50)

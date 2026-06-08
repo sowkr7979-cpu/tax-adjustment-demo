@@ -43,7 +43,9 @@ class ManualInput:
     prior_reserve_reversal_add: int = 0        # 전기 △유보 당기 추인 익금산입액 (유보)
     depreciation_denial_cumulative: int = 0
     carryforward_tax_credits: list[dict] = field(default_factory=list)
-    related_parties: list[str] = field(default_factory=list)
+    related_parties: list[str] = field(default_factory=list)          # 이름 목록 (다운스트림 매칭용)
+    # 특수관계인 상세 (표 표시·출처 구분) — [{이름, 관계, 지분율(%), 출처('DART'|'수기')}]
+    related_party_details: list[dict] = field(default_factory=list)
     non_business_assets: list[dict] = field(default_factory=list)
     pension_db_asset: int = 0                  # 기말 퇴직연금(DB) 운용자산(예치금) 잔액
     retirement_estimate: int = 0               # 퇴직급여추계액 (일시퇴직·보험수리 중 큰 값, 영§44의2④)
@@ -107,7 +109,10 @@ class ManualInput:
     # 거래상대방(차주)별 기초이월·약정이자 — 별지19호 1행/차주 (상대방 간 통산 금지)
     related_loan_parties: list[dict] = field(default_factory=list)  # [{name, opening, interest}]
     # 부당행위계산 부인 (법§52, 영§88) — 고가매입·저가양도 등 시가 비교는 수동 산정
-    unfair_transaction_amount: int = 0
+    unfair_transaction_amount: int = 0     # (레거시 폴백) 분개 미매칭 시 총액 입력
+    # 건별 질문형 수기입력 답 저장 — review_specs 항목키 → [건별 답 dict] (.taxproj 직렬화)
+    #   예: review_answers["부당행위계산 부인"] = [{"type":"고가매입","market":..,"deal":..,"who":"주주","_ref":"J1|3"}]
+    review_answers: dict = field(default_factory=dict)
     # 수입배당금 (법§18의2)
     dividend_ownership_ratio: float = 0.0      # 출자비율 (0~1)
     # 간주임대료 (조특법§138, 조특령§132)
@@ -122,6 +127,7 @@ class ManualInput:
     # 자산수증익·채무면제익 이월결손금 보전 (법§18 6호, 영§16) — 보전충당액 익금불산입
     asset_gift_revenue: int = 0                # 자산수증이익 수익 계상액 (국고보조금 제외)
     debt_forgiveness_revenue: int = 0          # 채무면제이익 수익 계상액
+    debt_forgiveness_equity_swap: bool = False # 출자전환 채무면제익 포함 (법§17①1호 단서·영§15)
     debt_relief_carryforward: int = 0          # 보전에 충당하는 이월결손금 (영§16, 공제기한 지난 것 포함)
     refund_interest_revenue: int = 0           # 수익 계상한 국세·지방세 환급금 이자 (법§18 4호 익금불산입)
     vat_output_revenue: int = 0                # 수익 계상한 부가가치세 매출세액 (법§18 5호 익금불산입)

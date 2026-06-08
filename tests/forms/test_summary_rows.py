@@ -110,6 +110,53 @@ def test_section18_4_5_6_deduct_rows():
                ("국세환급금 이자", "부가가치세 매출세액"))
 
 
+def test_unfair_transaction_per_line_disposition():
+    """부당행위 — 건별 내역 있으면 건별 행 + 건별 소득처분 (영§106)."""
+    r = _r(unfair_transaction=70_000_000,
+           unfair_transaction_lines=[
+               {"amount": 50_000_000, "disposition": "배당", "basis": "법§52, 영§88③", "ref": "J3|5"},
+               {"amount": 20_000_000, "disposition": "상여", "basis": "법§52, 영§88③", "ref": ""},
+           ])
+    add, ded = adjustment_rows(r, {})
+    배당 = _add((add, ded), "부당행위계산 부인 (J3|5)")[0]
+    상여 = _add((add, ded), "부당행위계산 부인")[0]
+    assert 배당[2] == 50_000_000 and 배당[4] == "배당"
+    assert 상여[2] == 20_000_000 and 상여[4] == "상여"
+
+
+def test_unfair_transaction_legacy_single_row():
+    """건별 내역 없으면(총액 폴백) 단일 행."""
+    r = _r(unfair_transaction=30_000_000)
+    add, ded = adjustment_rows(r, {})
+    rows = _add((add, ded), "부당행위계산 부인")
+    assert len(rows) == 1 and rows[0][2] == 30_000_000
+
+
+def test_welfare_per_line_disposition():
+    """복리후생비(열거 외) — 건별 행 + 건별 소득처분."""
+    r = _r(welfare_disallowed=6_000_000,
+           welfare_disallowed_lines=[
+               {"amount": 4_000_000, "disposition": "상여", "basis": "영§45①", "ref": "J1|2"},
+               {"amount": 2_000_000, "disposition": "배당", "basis": "영§45①", "ref": ""},
+           ])
+    add, ded = adjustment_rows(r, {})
+    상여 = _add((add, ded), "복리후생비 (열거 외) (J1|2)")[0]
+    배당 = _add((add, ded), "복리후생비 (열거 외)")[0]
+    assert 상여[2] == 4_000_000 and 상여[4] == "상여"
+    assert 배당[2] == 2_000_000 and 배당[4] == "배당"
+
+
+def test_deemed_dividend_per_line_rows():
+    """의제배당 — 건별 익금산입 행 (법§16①)."""
+    r = _r(deemed_dividend=40_000_000,
+           deemed_dividend_lines=[
+               {"amount": 40_000_000, "disposition": "유보", "basis": "법§16①", "ref": "J7|1"},
+           ])
+    add, ded = adjustment_rows(r, {})
+    row = _add((add, ded), "의제배당 (J7|1)")[0]
+    assert row[0] == "익금산입" and row[2] == 40_000_000
+
+
 def test_prior_reserve_reversal_rows():
     """전기 유보 추인 — 익금산입(가산)·손금산입(차감) 양방향 행."""
     r = _r(prior_reserve_reversal_add=5_000_000,

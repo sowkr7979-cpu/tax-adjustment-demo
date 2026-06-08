@@ -209,11 +209,24 @@ def render(proj) -> None:
 
                     # ── 특수관계인 자동 입력 ───────────────────────────────
                     if shareholders:
-                        proj.manual_input.related_parties = [
-                            f"{s['nm']} ({s['relate']})"
+                        # 상세(표·출처 구분·지분율) + 이름 목록(다운스트림 매칭) 동시 채움
+                        proj.manual_input.related_party_details = [
+                            {
+                                "이름":      s["nm"],
+                                "관계":      s.get("relate", ""),
+                                "지분율(%)": s.get("ownership_pct", ""),
+                                "출처":      "DART",
+                            }
                             for s in shareholders
                             if s["nm"]
                         ]
+                        proj.manual_input.related_parties = [
+                            s["nm"] for s in shareholders if s["nm"]
+                        ]
+                        # DART에서 불러온 인원수 기록 (④ 특수관계인 표시용)
+                        st.session_state["_dart_related_count"] = len(
+                            proj.manual_input.related_party_details
+                        )
 
                     st.session_state.pop("_dart_results", None)
                     filled = []
@@ -359,20 +372,131 @@ def render(proj) -> None:
         "특수관계인 목록",
         "특수관계인 관련 세무조정에 자동 활용됩니다 — ① 가지급금 인정이자 분개 추천 (법§52, 영§88①6호) "
         "② 업무무관 가지급금 지급이자 (법§28①4호나목) ③ LLM 분석 시 부당행위 의심 거래 탐지. "
-        "DART 자동 입력 시 주주 명단이 채워지며, 임원·친족 등을 추가하세요.",
+        "DART 최대주주현황(사업보고서 제출 회사) 자동 입력 시 주주 명단·지분율이 채워집니다 — "
+        "비상장 미제출 법인은 주주명부·감사보고서(특수관계자 거래 주석)로 임원·친족·관계회사를 직접 추가하세요.",
     ), unsafe_allow_html=True)
 
-    existing_parties = "\n".join(proj.manual_input.related_parties)
-    related_parties = st.text_area(
-        "특수관계인 목록",
-        value=existing_parties,
-        placeholder="대표이사 홍길동\n(주)OOO물산\n홍길동 배우자 박씨",
-        height=120,
-        label_visibility="collapsed",
+    # ── 상세 목록 구성 (DART 자동입력 + 수기) — 구버전 .taxproj(이름 문자열만) 호환 마이그레이션 ──
+    import pandas as pd
+    import re as _re
+
+    def _parse_legacy(s: str) -> tuple[str, str]:
+        """'홍길동 (최대주주)' → ('홍길동', '최대주주'). 괄호 없으면 관계 공란."""
+        m = _re.match(r"^(.*?)\s*\((.*)\)\s*$", s.strip())
+        return (m.group(1).strip(), m.group(2).strip()) if m else (s.strip(), "")
+
+    _details = [dict(d) for d in (proj.manual_input.related_party_details or [])]
+    if not _details and proj.manual_input.related_parties:
+        for s in proj.manual_input.related_parties:
+            _nm, _rel = _parse_legacy(s)
+            _details.append({"이름": _nm, "관계": _rel, "지분율(%)": "", "출처": "수기"})
+
+    _dart_n = sum(1 for d in _details if d.get("출처") == "DART")
+    _man_n = len(_details) - _dart_n
+
+    # ── 입력 현황 (총원 + DART/수기 구분) ──
+    _c1, _c2, _c3 = st.columns(3)
+    _c1.metric("특수관계인 합계", f"{len(_details)}명")
+    _c2.metric("🟢 DART 자동입력", f"{_dart_n}명")
+    _c3.metric("✏️ 수기 입력", f"{_man_n}명")
+    if _dart_n:
+        st.caption(
+            f"※ DART 최대주주·특수관계인 현황에서 **{_dart_n}명**의 주주 명단이 채워졌습니다(아래 표 '출처'=DART). "
+            "DART에 없는 임원·친족·관계회사 등은 표 맨 아래 빈 행에 추가하세요."
+        )
+    else:
+        st.caption(
+            "※ DART 자동 입력분 없음 (비상장·공시 없음·조회 실패 등) — 주주명부 기준으로 직접 입력하세요. "
+            "DART 조회는 위 ① 회사정보에서 실행합니다."
+        )
+    if not _details:
+        st.warning(
+            "⚠ 특수관계인이 **0명**입니다 — 가지급금 인정이자(법§52)·부당행위 탐지에 필요하니 "
+            "주주·임원·친족·관계회사를 입력하세요."
+        )
+
+    # ── 표 편집 (이름·관계·지분율·출처) ──
+    _rp_df = pd.DataFrame(_details, columns=["이름", "관계", "지분율(%)", "출처"])
+    _edited = st.data_editor(
+        _rp_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "이름": st.column_config.TextColumn("이름", required=True, width="medium"),
+            "관계": st.column_config.TextColumn("관계", help="최대주주·대표이사·임원·친족·관계회사 등"),
+            "지분율(%)": st.column_config.TextColumn("지분율(%)", help="DART 자동입력분에 표시(보통주 기말 지분율)"),
+            "출처": st.column_config.SelectboxColumn(
+                "출처", options=["DART", "수기"], default="수기",
+                help="DART 주주현황 자동입력분과 직접 추가한 항목을 구분합니다",
+            ),
+        },
+        key="rp_editor",
     )
     if st.button("특수관계인 저장"):
-        proj.manual_input.related_parties = [
-            p.strip() for p in related_parties.splitlines() if p.strip()
-        ]
-        st.success(f"{len(proj.manual_input.related_parties)}명 저장됩니다.")
+        _new_details, _new_names = [], []
+        for _, _row in _edited.iterrows():
+            _nm = str(_row.get("이름", "") or "").strip()
+            if not _nm:
+                continue
+            _new_details.append({
+                "이름": _nm,
+                "관계": str(_row.get("관계", "") or "").strip(),
+                "지분율(%)": str(_row.get("지분율(%)", "") or "").strip(),
+                "출처": (str(_row.get("출처", "") or "").strip() or "수기"),
+            })
+            _new_names.append(_nm)   # 다운스트림(거래처명 부분일치)은 이름만 사용
+        proj.manual_input.related_party_details = _new_details
+        proj.manual_input.related_parties = _new_names
+        st.success(f"{len(_new_names)}명 저장되었습니다 "
+                   f"(DART {sum(1 for d in _new_details if d['출처']=='DART')} · "
+                   f"수기 {sum(1 for d in _new_details if d['출처']=='수기')}).")
+
+    # ── 미리보기 (읽기전용): 🟢 DART 음영 · 🔴 30% 초과 지배주주 하이라이트 · 지분율 합계 ──
+    def _pct(v) -> float | None:
+        try:
+            return float(str(v).replace("%", "").replace(",", "").strip())
+        except (ValueError, AttributeError):
+            return None
+
+    _valid = _edited.copy()
+    _valid["이름"] = _valid["이름"].astype(str)
+    _valid = _valid[
+        _valid["이름"].str.strip().ne("") & _valid["이름"].str.strip().str.lower().ne("nan")
+    ]
+    if len(_valid) > 0:
+        _prev = _valid[["이름", "관계", "지분율(%)", "출처"]].reset_index(drop=True)
+        _pcts = [_pct(v) for v in _prev["지분율(%)"]]   # 리스트로 — None 보존(NaN 변환 방지)
+        _total = round(sum(p for p in _pcts if p is not None), 2)
+        _n_ctrl = int(sum(1 for p in _pcts if p is not None and p > 30))
+        _sum_row = {"이름": "합계", "관계": "",
+                    "지분율(%)": (f"{_total:g}" if _total else ""), "출처": ""}
+        _prev_disp = pd.concat([_prev, pd.DataFrame([_sum_row])], ignore_index=True)
+        _last = len(_prev_disp) - 1
+        _pct_col = list(_prev_disp.columns).index("지분율(%)")
+
+        def _style_row(row):
+            css = [""] * len(row)
+            if row.name == _last:                       # 합계 행
+                return ["font-weight:700; background-color:#f0f0f5"] * len(row)
+            if str(row.get("출처", "")) == "DART":        # DART 음영 (연한 초록)
+                css = ["background-color:#e8f5e9"] * len(row)
+            p = _pct(row.get("지분율(%)"))                # 30% 초과 지배주주 하이라이트
+            if p is not None and p > 30:
+                css[_pct_col] = (css[_pct_col] + "; " if css[_pct_col] else "") + \
+                    "background-color:#ffd6d6; font-weight:700; color:#b00020"
+            return css
+
+        st.markdown(
+            "**현황 미리보기** — 🟢 DART 자동입력 음영 · 🔴 지분율 30% 초과 지배주주 하이라이트"
+        )
+        st.dataframe(
+            _prev_disp.style.apply(_style_row, axis=1),
+            use_container_width=True, hide_index=True,
+        )
+        _cap = f"지분율 합계 {_total:g}%"
+        if _n_ctrl:
+            _cap += (f" · 🔴 30% 초과 지배주주 후보 {_n_ctrl}명 "
+                     "(영§43⑦ 지배주주등·법§52 특수관계 판정 참고 — 회계사 확인)")
+        st.caption(_cap)
 

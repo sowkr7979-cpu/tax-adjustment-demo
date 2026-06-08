@@ -7,6 +7,11 @@ import streamlit as st
 from src.project.taxproj import ManualInput
 from src.rules.tax_credit_catalog import lookup_credit_spec
 from src.rules.penalty_surtax import aggregate_surtax
+from src.ui.review_questions import ReviewItemSpec, should_show, build_result
+from src.ui.review_specs import (
+    unfair_transaction_spec, welfare_spec, deemed_dividend_spec, inventory_spec,
+    officer_retirement_spec, officer_bonus_spec,
+)
 
 
 def validate_manual_input(mi: ManualInput, fiscal_year_end: date) -> list[str]:
@@ -770,6 +775,89 @@ def _render_line_check(
     return True, total
 
 
+# unit별 '건' 명칭·도움말 (UI 표시용)
+_UNIT_NOUN = {"line": "건", "officer": "임원", "category": "종류", "item": "건"}
+
+
+def _render_review_line_cards(
+    mi: ManualInput, spec: ReviewItemSpec, candidate_labels: list[str] | None = None,
+) -> None:
+    """질문 카드 렌더러 — unit(line/officer/category/item)별 동적 인스턴스.
+
+    decision tree(show_when)로 필요질문만 노출. 답은 mi.review_answers[spec.key]=[dict]로 저장.
+    각 인스턴스의 조정금액·소득처분·법령게이트 결과를 즉시 표시한다.
+    unit='item'은 1건 고정(건수 입력 없음).
+    """
+    if not isinstance(mi.review_answers, dict):
+        mi.review_answers = {}
+    prev = mi.review_answers.get(spec.key, []) or []
+    _noun = _UNIT_NOUN.get(spec.unit, "건")
+    if spec.unit == "item":
+        n = 1
+    else:
+        n = int(st.number_input(
+            f"{spec.target_label} {_noun}수", min_value=0, max_value=50,
+            value=max(len(prev), 0), step=1, key=f"rev_n_{spec.key}",
+            help=f"해당 {_noun}을 추가하고 질문에 답하면 조정금액·소득처분이 결정됩니다.",
+        ))
+    answers_list: list[dict] = []
+    _cands = candidate_labels or []
+    for i in range(n):
+        p = prev[i] if i < len(prev) else {}
+        a: dict = {}
+        if spec.unit != "item":
+            st.markdown(f"**{spec.target_label} — {_noun} #{i + 1}**")
+        if _cands:
+            _opts = ["(직접 입력)"] + _cands
+            _pv = p.get("_ref", "")
+            _idx = _opts.index(_pv) if _pv in _opts else 0
+            _ref = st.selectbox(f"관련 {_noun} #{i + 1}", _opts, index=_idx,
+                                key=f"rev_ref_{spec.key}_{i}")
+            a["_ref"] = "" if _ref == "(직접 입력)" else _ref
+        else:
+            a["_ref"] = p.get("_ref", "")
+        # decision tree — 앞 질문 답에 따라 show_when 충족 질문만 순차 노출
+        for q in spec.questions:
+            if not should_show(q, a):
+                continue
+            wkey = f"rev_{spec.key}_{i}_{q.id}"
+            if q.kind == "select":
+                opts = list(q.options)
+                idx = opts.index(p[q.id]) if p.get(q.id) in opts else 0
+                a[q.id] = st.selectbox(q.text, opts, index=idx, key=wkey, help=q.help)
+            elif q.kind == "amount":
+                a[q.id] = int(st.number_input(
+                    q.text, min_value=0, value=int(p.get(q.id, 0) or 0),
+                    step=1_000_000, key=wkey, help=q.help))
+            elif q.kind == "number":
+                a[q.id] = float(st.number_input(
+                    q.text, min_value=0.0, value=float(p.get(q.id, 0) or 0),
+                    step=1.0, key=wkey, help=q.help))
+            elif q.kind == "yesno":
+                a[q.id] = st.checkbox(q.text, value=bool(p.get(q.id, False)),
+                                      key=wkey, help=q.help)
+            elif q.kind in ("counterparty", "date"):
+                a[q.id] = st.text_input(q.text, value=str(p.get(q.id, "")),
+                                        key=wkey, help=q.help)
+        _r = build_result(spec, a, line_ref=str(a.get("_ref", "")))
+        if _r is not None:
+            st.success(f"→ {_r.label} **{_r.amount:,}원** · 소득처분 **{_r.disposition}** ({_r.legal_basis})")
+        elif a.get(spec.questions[0].id) not in ("해당없음", None, ""):
+            st.caption("→ 법령 요건 미달(영§88③ 3억/5% 미달) 또는 금액 0 — 조정 제외")
+        answers_list.append(a)
+    mi.review_answers[spec.key] = answers_list
+    # 카드 합계
+    _results = [build_result(spec, a, line_ref=str(a.get("_ref", ""))) for a in answers_list]
+    _results = [r for r in _results if r is not None]
+    if _results:
+        _total = sum(r.amount for r in _results)
+        _by_disp: dict[str, int] = {}
+        for r in _results:
+            _by_disp[r.disposition] = _by_disp.get(r.disposition, 0) + r.amount
+        _disp_txt = " · ".join(f"{k} {v:,}" for k, v in _by_disp.items())
+        st.markdown(f"**합계 {_total:,}원** (처분별: {_disp_txt})")
+
+
 def render_adjustment_data(
     mi: ManualInput, journals: list | None = None, loader=None,
     related_parties: list | None = None,
@@ -889,6 +977,21 @@ def render_adjustment_data(
             "직전 1년 총급여 (원)", min_value=0, value=mi.officer_retirement_last_salary, step=1_000_000,
             help="정관 규정이 없을 때 한도 = 총급여 × 1/10 × 근속연수",
         ))
+
+        # ── 임원 상여 한도 — 질문형 (임원 게이트·지급기준 초과, 영§43②) ──
+        st.divider()
+        st.markdown("**임원 상여금 한도초과 — 질문형 (지급기준 초과)**")
+        if mi.officer_bonus_paid:
+            st.caption(f"참고: 자동 집계된 임원 상여 지급액 {mi.officer_bonus_paid:,}원")
+        _render_review_line_cards(mi, officer_bonus_spec(), [])
+
+        # ── 임원 퇴직금 한도 — 질문형 (정관규정 우선 분기, 영§44④⑤) ──
+        st.divider()
+        st.markdown("**임원 퇴직금 한도초과 — 질문형 (정관규정 우선)**")
+        if mi.officer_retirement_paid:
+            st.caption(f"참고: 자동 집계된 임원 퇴직급여 지급액 {mi.officer_retirement_paid:,}원 "
+                       "(아래 '실제 지급 퇴직급여'에 입력)")
+        _render_review_line_cards(mi, officer_retirement_spec(), [])
 
     with st.expander("업무용승용차 (법§27의2, 영§50의2)"):
         c1, c2 = st.columns(2)
@@ -1076,18 +1179,11 @@ def render_adjustment_data(
                 _mismatches.append(f"{cat}: 신고 {reported} ≠ 장부 {book}")
 
         if _mismatches:
-            st.warning(
-                "평가방법 조정 대상:\n" + "\n".join(f"- {m}" for m in _mismatches)
-                + "\n\n세법상 방법(무신고 시 선입선출법)으로 재평가한 차이액을 입력하세요."
-            )
-            mi.inventory_valuation_adjustment = int(st.number_input(
-                "재고자산 평가 조정액 (원) — 가산 (유보)", min_value=0,
-                value=mi.inventory_valuation_adjustment, step=1_000_000,
-                help="세법상 평가액 - 장부상 평가액 (재고수불부 기준 재계산 필요)",
-            ))
-        else:
-            mi.inventory_valuation_adjustment = 0
-            st.caption("평가방법 불일치 없음 — 조정 불필요")
+            st.warning("평가방법 조정 대상:\n" + "\n".join(f"- {m}" for m in _mismatches))
+        # ── 재고자산 평가 — 종류별 질문형 (영§74④ 단서: max(선입선출, 신고방법) 자동) ──
+        st.markdown("**재고자산 평가 조정 — 종류별 검토**")
+        st.caption("무신고=선입선출(부동산 개별법). 신고방법외·변경무신고는 신고평가액이 더 크면 신고방법 적용(단서).")
+        _render_review_line_cards(mi, inventory_spec(), list(_CATS))
         st.caption(
             "유가증권 평가손익은 분개장에서 자동 집계되어 부인됩니다 "
             "(일반법인 원가법 강제 — 영§75). 별도 입력 불필요.",
@@ -1162,32 +1258,30 @@ def render_adjustment_data(
                 st.markdown(f"→ 업무무관비용 손금불산입 **{_tn:,}원**")
                 any_rendered = True
 
-            # ── 열거 외 복리후생비 (영§45) — 해당 건 전액 손금불산입 ──
-            _rw, _tw = _render_line_check(
-                mi, journals, "welfare_disallowed", "열거 외 복리후생비 (영§45)",
-                ("복리후생",), (),
-                "영§45 열거 항목(직장체육비·경조사비 등) 외 지출만 체크 — 전액 손금불산입",
-            )
-            if _rw:
-                mi.welfare_disallowed = _tw
-                st.markdown(f"→ 열거 외 복리후생비 손금불산입 **{_tw:,}원**")
-                any_rendered = True
         if not any_rendered:
-            st.caption("분개장에서 관련 계정을 찾지 못했습니다 — 금액을 직접 입력하세요.")
-            c1, c2 = st.columns(2)
-            mi.welfare_disallowed = int(c1.number_input(
-                "열거 외 복리후생비 (원)", min_value=0, value=mi.welfare_disallowed, step=1_000_000,
-            ))
-            mi.joint_expense_excess = int(c2.number_input(
+            st.caption("공동경비·업무무관비용·징벌적 손해배상금 관련 분개를 찾지 못했습니다 — 직접 입력하세요.")
+            c1, c2, c3 = st.columns(3)
+            mi.joint_expense_excess = int(c1.number_input(
                 "공동경비 분담기준 초과액 (원)", min_value=0, value=mi.joint_expense_excess, step=1_000_000,
             ))
-            c3, c4 = st.columns(2)
-            mi.non_business_expense = int(c3.number_input(
+            mi.non_business_expense = int(c2.number_input(
                 "업무무관비용 (원)", min_value=0, value=mi.non_business_expense, step=1_000_000,
             ))
-            mi.punitive_damages = int(c4.number_input(
+            mi.punitive_damages = int(c3.number_input(
                 "징벌적 손해배상금 (원)", min_value=0, value=mi.punitive_damages, step=1_000_000,
             ))
+
+        # ── 복리후생비 (영§45①) — 건별 질문형 (열거 게이트 → 귀속자 처분), 항상 렌더 ──
+        st.divider()
+        st.markdown("**복리후생비 (영§45①) — 건별 검토**")
+        st.caption("열거 8항목(직장체육·경조사 등)은 손금 인정. '열거 외'만 손금불산입 + 귀속자 처분.")
+        _wf_cands = [
+            f"{str(ln.date)} · {ln.description[:20]} · {ln.counterparty_name} · {ln.debit:,}원"
+            for ln in (journals or [])
+            if (("복리후생비" in ln.account_name.replace(" ", "")
+                 or "복리시설비" in ln.account_name.replace(" ", "")) and ln.debit)
+        ]
+        _render_review_line_cards(mi, welfare_spec(), _wf_cands[:300])
 
     with st.expander("가지급금 인정이자·수입배당금·간주임대료 (법§52·18의2, 조특법§138)"):
         # 가지급금·대여금 분개 체크 — 특수관계인 목록 기반 추천 (인정이자 + 업무무관이자 연동)
@@ -1321,8 +1415,21 @@ def render_adjustment_data(
         mi.debt_forgiveness_revenue = int(cdb.number_input(
             "채무면제이익 (수익 계상액, 원)", min_value=0,
             value=mi.debt_forgiveness_revenue, step=1_000_000,
-            help="채무의 면제·소멸로 인한 부채 감소액 중 수익으로 계상된 금액",
+            help="채무의 면제·소멸로 인한 부채 감소액 중 수익으로 계상된 금액. "
+                 "출자전환분은 아래 체크 후 시가 초과분만 입력.",
         ))
+        # 출자전환 채무면제익 분기 (법§17①1호 단서·영§15)
+        mi.debt_forgiveness_equity_swap = st.checkbox(
+            "출자전환으로 발생한 채무면제익이 포함되어 있는가? (법§17①1호 단서)",
+            value=mi.debt_forgiveness_equity_swap,
+        )
+        if mi.debt_forgiveness_equity_swap:
+            st.warning(
+                "⚠ **출자전환 채무면제익** — 출자전환으로 발행한 주식의 **시가를 초과하는 채무면제분만** "
+                "채무면제익(법§17①1호 단서·영§15)입니다. 시가 이하분은 주식발행초과금(익금불산입). "
+                "위 '채무면제이익' 칸에는 **시가 초과분만** 입력하세요. "
+                "이 채무면제익도 이월결손금 보전 충당분은 익금불산입(법§18 6호)."
+            )
         mi.debt_relief_carryforward = int(st.number_input(
             "보전에 충당하는 이월결손금 (영§16, 원)", min_value=0,
             value=mi.debt_relief_carryforward, step=1_000_000,
@@ -1391,12 +1498,31 @@ def render_adjustment_data(
                 st.caption("특수관계인 목록과 일치하는 거래처의 분개가 없습니다 (가지급금·인건비 제외).")
         elif not _rp_nm:
             st.caption("1단계에서 특수관계인 목록을 저장하면 관련 거래 분개가 여기에 표시됩니다.")
-        mi.unfair_transaction_amount = int(st.number_input(
-            "부당행위계산 부인액 — 익금산입 (원)", min_value=0,
-            value=mi.unfair_transaction_amount, step=1_000_000,
-            help="시가 자료(감정가액·상증법 평가 등)로 산정한 시가와의 차액 (영§89⑤). "
-                 "소득처분은 귀속자에 따라 배당·상여·기타사외유출",
-        ))
+
+        # ── 건별 질문형 입력 (금전대여 제외·영§88③ 게이트·건별 소득처분) ──
+        st.divider()
+        _cand_labels: list[str] = []
+        if journals and _rp_nm and _rp_lines:
+            _cand_labels = [
+                f"{str(ln.date)} · {ln.account_name} · {ln.counterparty_name} · "
+                f"{(ln.debit or ln.credit):,}원"
+                for ln in _rp_lines[:300]
+            ]
+        _render_review_line_cards(mi, unfair_transaction_spec(), _cand_labels)
+
+    with st.expander("의제배당 (법§16①) — 감자·해산·합병·무상증자 등"):
+        st.caption(
+            "감자·소각·퇴사·해산·합병·분할·무상증자(잉여금 자본전입) 시 교부받은 재산·주식가액이 "
+            "주식 취득가액을 초과하면 의제배당으로 익금산입(법§16①). 무상증자(2호)는 취득가액 차감 "
+            "없이 전액, 상법§459① 자본준비금·재평가적립금 자본전입은 제외."
+        )
+        _dd_cands = [
+            f"{str(ln.date)} · {ln.account_name} · {ln.description[:20]} · "
+            f"{(ln.debit or ln.credit):,}원"
+            for ln in (journals or [])
+            if any(k in (ln.description or "") for k in ("유상감자", "무상주", "잉여금", "감자", "합병", "분할"))
+        ]
+        _render_review_line_cards(mi, deemed_dividend_spec(), _dd_cands[:300])
 
     with st.expander("세액공제·감면 / 가산세 / 기납부세액 (법§55~64·73, 조특법)"):
         st.caption(

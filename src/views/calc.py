@@ -604,8 +604,26 @@ def render(proj) -> None:
                             disposition="△유보")
 
                 # 재고자산 평가 조정 및 기타 손금불산입 (수기 입력)
-                result.inventory_adjustment = mi.inventory_valuation_adjustment
-                result.welfare_disallowed = mi.welfare_disallowed
+                # 재고자산 평가 — 건별 질문형(종류별, 영§74④ 단서). 없으면 레거시 총액.
+                from src.ui.review_specs import inventory_spec as _inv_spec
+                _inv_results = build_results(
+                    _inv_spec(), (mi.review_answers or {}).get("재고자산 평가", []))
+                result.inventory_adjustment = (
+                    sum(r.amount for r in _inv_results) if _inv_results
+                    else mi.inventory_valuation_adjustment)
+                # 복리후생비(열거 외) — 건별 질문형(영§45 열거게이트·건별 처분). 없으면 레거시 총액.
+                from src.ui.review_specs import welfare_spec
+                from src.ui.review_questions import build_results as _build_results
+                _welfare_results = _build_results(
+                    welfare_spec(), (mi.review_answers or {}).get("복리후생비 (열거 외)", []))
+                if _welfare_results:
+                    result.welfare_disallowed = sum(r.amount for r in _welfare_results)
+                    result.welfare_disallowed_lines = [
+                        {"amount": r.amount, "disposition": r.disposition,
+                         "basis": r.legal_basis, "ref": r.line_ref}
+                        for r in _welfare_results]
+                else:
+                    result.welfare_disallowed = mi.welfare_disallowed
                 result.joint_expense_excess = mi.joint_expense_excess
                 result.non_business_expense = mi.non_business_expense
                 result.punitive_damages = mi.punitive_damages
@@ -616,12 +634,26 @@ def render(proj) -> None:
                             reason="3단계 재고자산 평가방법 입력에서 ①신고방법과 ②장부방법이 불일치 (또는 무신고)",
                             tax_basis="신고 평가방법으로 재계산한 재고자산가액과 장부가액의 차액 (영§74)",
                             disposition="유보")
-                _add_detail("복리후생비 (열거 외)", mi.welfare_disallowed, "영§45",
-                            ["영§45① 열거 항목 외 복리후생비 → 전액 손금불산입", _manual_src],
-                            reason=_manual_why,
-                            book=mi.welfare_disallowed, tax=0,
-                            tax_basis="영§45① 열거 외 복리후생비 손금 불인정 (전액)",
-                            disposition="상여 등")
+                if result.welfare_disallowed_lines:
+                    _wf_disp = " · ".join(f"{x['disposition']} {x['amount']:,}"
+                                          for x in result.welfare_disallowed_lines)
+                    _add_detail("복리후생비 (열거 외)", result.welfare_disallowed, "영§45①",
+                                [f"건별 손금불산입 {result.welfare_disallowed:,}원 — "
+                                 f"{len(result.welfare_disallowed_lines)}건",
+                                 f"건별 소득처분: {_wf_disp}",
+                                 "영§45① 열거 8항목(직장체육·경조사 등)은 손금 인정 — '열거 외'만 부인"],
+                                reason="3단계에서 복리후생비를 건별로 영§45 열거여부·귀속자 입력 → "
+                                       "열거 외 비용만 손금불산입, 귀속자별 소득처분",
+                                book=result.welfare_disallowed, tax=0,
+                                tax_basis="영§45① 열거 외 복리후생비 손금불산입, 건별 소득처분",
+                                disposition="건별 (상여·배당 등)")
+                else:
+                    _add_detail("복리후생비 (열거 외)", mi.welfare_disallowed, "영§45",
+                                ["영§45① 열거 항목 외 복리후생비 → 전액 손금불산입", _manual_src],
+                                reason=_manual_why,
+                                book=mi.welfare_disallowed, tax=0,
+                                tax_basis="영§45① 열거 외 복리후생비 손금 불인정 (전액)",
+                                disposition="상여 등")
                 _add_detail("공동경비 분담 초과", mi.joint_expense_excess, "영§48",
                             [f"부담액 − (공동경비 총액 {mi.joint_total_pool:,}원 × 분담비율 {mi.joint_share_ratio:.1%}) = 초과분 {mi.joint_expense_excess:,}원", _manual_src],
                             reason="3단계에서 공동경비 분개 체크 + 총액·분담비율 입력 → 분담기준 초과분만 손금불산입",
@@ -644,8 +676,20 @@ def render(proj) -> None:
                                        else "실손해액 불분명 → 지급액 × 2/3 손금불산입 (영§23②)"),
                             disposition="기타사외유출")
 
-                # 임원 상여 한도초과 (법§26, 영§43)
-                if mi.officer_bonus_paid > 0:
+                # 임원 상여 한도초과 (법§26, 영§43②) — 건별 질문형(임원 게이트·지급기준 초과)
+                from src.ui.review_specs import officer_bonus_spec
+                _bonus_results = build_results(
+                    officer_bonus_spec(), (mi.review_answers or {}).get("임원 상여금 한도초과", []))
+                if _bonus_results:
+                    result.officer_bonus_excess = sum(r.amount for r in _bonus_results)
+                    _add_detail("임원 상여금 한도초과", result.officer_bonus_excess, "영§43②",
+                                [f"한도초과 합계 {result.officer_bonus_excess:,}원 — {len(_bonus_results)}건",
+                                 "정관·주총·이사회 결의 급여지급기준 초과분(기준 없으면 전액). 직원은 미적용"],
+                                reason="3단계에서 임원여부·지급기준 한도 입력 → 기준 초과 상여 손금불산입",
+                                book=0, tax=result.officer_bonus_excess,
+                                tax_basis="정관·주총 결의 급여지급기준 초과 (영§43②)",
+                                disposition="상여")
+                elif mi.officer_bonus_paid > 0:
                     result.officer_bonus_excess = calc_officer_bonus_excess(
                         paid_bonus=mi.officer_bonus_paid,
                         approved_limit=mi.officer_bonus_limit,
@@ -659,8 +703,22 @@ def render(proj) -> None:
                                 tax_basis=f"정관·주총 결의 상여 한도 {mi.officer_bonus_limit:,}원 (영§43②)",
                                 disposition="상여")
 
-                # 임원 퇴직금 한도초과 (법§26, 영§44)
-                if mi.officer_retirement_paid > 0 and mi.officer_retirement_last_salary > 0:
+                # 임원 퇴직금 한도초과 (법§26, 영§44④⑤) — 건별 질문형(정관규정 우선 분기)
+                from src.ui.review_specs import officer_retirement_spec
+                _ret_results = build_results(
+                    officer_retirement_spec(), (mi.review_answers or {}).get("임원 퇴직금 한도초과", []))
+                if _ret_results:
+                    result.officer_retirement_excess = sum(r.amount for r in _ret_results)
+                    _add_detail("임원 퇴직금 한도초과", result.officer_retirement_excess, "영§44④⑤",
+                                [f"한도초과 합계 {result.officer_retirement_excess:,}원 — {len(_ret_results)}건",
+                                 "정관 규정 있으면 정관금액 한도(영§44④1호·⑤), 없으면 직전1년 총급여×1/10×근속(2호)"],
+                                reason="3단계에서 정관 퇴직급여 규정 유무 → 규정액 또는 법정한도(총급여×1/10×근속) "
+                                       "기준으로 초과분 산정 (정관규정 우선)",
+                                book=0, tax=result.officer_retirement_excess,
+                                tax_basis="정관규정 우선, 없으면 총급여×1/10×근속 한도 (영§44④⑤)",
+                                disposition="상여")
+                elif mi.officer_retirement_paid > 0 and mi.officer_retirement_last_salary > 0:
+                    # 레거시 폴백 (정관 분기 없음)
                     result.officer_retirement_excess = calc_officer_retirement_excess(
                         paid_amount=mi.officer_retirement_paid,
                         tenure_years=mi.officer_retirement_tenure,
@@ -748,9 +806,21 @@ def render(proj) -> None:
                         "※ 차량유지비는 분개장에 차량별로 구분되지 않아 감가상각비 비율로 안분함 — "
                         "차량별 실제 유지비·보험 가입이 다르면 3단계에서 보정"
                     )
+                    # 근거분개 표시 — 등록 차량번호와 정확히 일치하거나 차량번호 식별이 안 되는(공통) 분개만 포함.
+                    # 적요·차량번호에 '다른 차량'의 번호가 식별되는 분개는 제외(오매칭 방지). 금액은 불변(표시만 정정).
+                    from src.rules.vehicle_match import registered_plates, filter_vehicle_lines
+                    _veh_pool = agg.detail_lines.get("업무용승용차 관련비용") or []
+                    _veh_plates = registered_plates(_veh_assets)
+                    _veh_kept, _veh_foreign = filter_vehicle_lines(_veh_pool, _veh_plates)
+                    if _veh_foreign:
+                        _veh_formula.append(
+                            f"※ 근거분개 표시에서 등록 차량({len(_veh_plates)}대) 외 다른 차량번호가 적요·차량번호에 "
+                            f"식별된 분개 {len(_veh_foreign):,}건은 제외했습니다 — 해당 분개가 업무용승용차에 "
+                            "해당하는지 별도 확인이 필요할 수 있습니다(금액 집계는 변동 없음)."
+                        )
                     _veh_related = sum(v.depreciation + v.other_expense for v in _veh_results)
                     _add_detail("업무용승용차 관련비용", result.vehicle_disallowed, "법§27의2, 영§50의2",
-                                _veh_formula, agg.detail_lines.get("업무용승용차 관련비용"),
+                                _veh_formula, _veh_kept,
                                 reason="3단계에서 업무용승용차로 체크한 차량운반구 자산별로 영§50의2 한도를 "
                                        "각각 적용(한도 풀링 방지). 보험·운행기록부·업무사용비율은 3단계 입력 적용. "
                                        "증빙불비 판정이 아니라 업무사용비율·한도 조정입니다",
@@ -849,20 +919,72 @@ def render(proj) -> None:
                             "계정별명세서·재무상태표 업로드 또는 3단계 간주임대료 차입금 입력 후 재계산하세요."
                         )
 
-                # 부당행위계산 부인 (법§52, 영§88·89⑤) — 시가 차액은 수기 산정
-                result.unfair_transaction = mi.unfair_transaction_amount
-                _add_detail(
-                    "부당행위계산 부인", mi.unfair_transaction_amount, "법§52, 영§88, 영§89⑤",
-                    ["고가매입·저가양도 등 시가와의 차액 익금산입 (영§89⑤)",
-                     "적용 기준: 차액 ≥ 3억원 또는 시가의 5% 이상 (영§88③ — 상장주식 거래 제외)",
-                     "금전 대여(영§88①6호)는 가지급금 인정이자에서 자동 계산 — 중복 아님",
-                     "근거 자료: 3단계 '부당행위계산 부인' 입력 (특수관계인 거래 분개 참고 표 제공)"],
-                    reason="3단계에서 특수관계인 거래 검토 후 시가 차액을 직접 입력함 — "
-                           "시가(감정가액·상증법 평가)는 자동 산정 불가",
-                    book=0, tax=mi.unfair_transaction_amount,
-                    tax_basis="고가매입·저가양도 등 시가와의 차액 익금산입 (영§89⑤)",
-                    disposition="배당·상여 등",
+                # 부당행위계산 부인 (법§52, 영§88③·89⑤) — 건별 질문형 입력
+                # 3단계에서 건별로 거래유형·시가·거래가액·귀속자를 입력 → 영§88③ 게이트 통과분만
+                from src.ui.review_specs import unfair_transaction_spec
+                from src.ui.review_questions import build_results
+                _unfair_spec = unfair_transaction_spec()
+                _unfair_results = build_results(
+                    _unfair_spec, (mi.review_answers or {}).get("부당행위계산 부인", []),
                 )
+                # 분개 미매칭 시 레거시 총액 폴백(검토필요 처분)
+                _unfair_total = sum(r.amount for r in _unfair_results)
+                if not _unfair_results and mi.unfair_transaction_amount:
+                    _unfair_total = int(mi.unfair_transaction_amount)
+                result.unfair_transaction = _unfair_total
+                result.unfair_transaction_lines = [
+                    {"amount": r.amount, "disposition": r.disposition,
+                     "basis": r.legal_basis, "ref": r.line_ref}
+                    for r in _unfair_results
+                ]
+                if _unfair_results:
+                    _disp_brief = " · ".join(
+                        f"{r.disposition} {r.amount:,}" for r in _unfair_results)
+                    _add_detail(
+                        "부당행위계산 부인", _unfair_total, "법§52, 영§88③, 영§89⑤",
+                        [f"건별 부인액 합계 {_unfair_total:,}원 — {len(_unfair_results)}건",
+                         f"건별 소득처분: {_disp_brief}",
+                         "영§88③: 차액 ≥ 3억 또는 시가 5%(1·3·6·7·9호) — 미달 건은 자동 제외",
+                         "금전 대여(영§88①6호)는 가지급금 인정이자에서 계산 — 중복 아님",
+                         "근거 자료: 3단계 '부당행위계산 부인' 건별 질문 입력"],
+                        reason="3단계에서 특수관계인 거래를 건별로 검토 — 거래유형·시가·거래가액·"
+                               "귀속자 입력으로 부인액·소득처분 결정(영§88③ 게이트 적용)",
+                        book=0, tax=_unfair_total,
+                        tax_basis="고가매입·저가양도 등 시가차액 익금산입, 건별 소득처분 (영§88③·89⑤)",
+                        disposition="건별 (배당·상여·기타사외유출)",
+                    )
+                elif _unfair_total:
+                    _add_detail(
+                        "부당행위계산 부인", _unfair_total, "법§52, 영§88, 영§89⑤",
+                        ["(총액 폴백) 분개 미매칭 — 3단계 총액 입력분",
+                         "적용 기준: 차액 ≥ 3억원 또는 시가의 5% 이상 (영§88③)"],
+                        reason="건별 입력이 없어 총액 폴백 사용 — 소득처분 건별 구분 권장",
+                        book=0, tax=_unfair_total,
+                        tax_basis="시가차액 익금산입 (영§89⑤)",
+                        disposition="검토필요",
+                    )
+
+                # 의제배당 (법§16①) — 건별 질문형. 사유별 산식·상법§459 게이트.
+                from src.ui.review_specs import deemed_dividend_spec
+                _dd_results = build_results(
+                    deemed_dividend_spec(), (mi.review_answers or {}).get("의제배당", []))
+                result.deemed_dividend = sum(r.amount for r in _dd_results)
+                result.deemed_dividend_lines = [
+                    {"amount": r.amount, "disposition": r.disposition,
+                     "basis": r.legal_basis, "ref": r.line_ref}
+                    for r in _dd_results]
+                if _dd_results:
+                    _add_detail(
+                        "의제배당", result.deemed_dividend, "법§16①",
+                        [f"건별 익금산입 {result.deemed_dividend:,}원 — {len(_dd_results)}건",
+                         "사유별: 감자·해산·합병·분할=교부재산−취득가액 / 무상증자=교부주식가액 전부",
+                         "상법§459① 자본준비금·재평가적립금 자본전입은 의제배당 제외(자동)"],
+                        reason="3단계에서 감자·합병·무상증자 등 사유와 교부재산·취득가액 입력 → "
+                               "법§16① 사유별 산식으로 의제배당 익금산입",
+                        book=0, tax=result.deemed_dividend,
+                        tax_basis="법§16① 사유별 의제배당 익금산입",
+                        disposition="-",
+                    )
 
                 # 기부금 한도(법§24)는 다른 모든 세무조정 후 차가감소득금액 기준으로
                 # 계산해야 하므로 충당금 계산 뒤로 이동했다 (아래 참조).
@@ -1000,6 +1122,7 @@ def render(proj) -> None:
                 _prior_special = sum(x["amount"] for x in _cf_special)
                 _prior_general = sum(x["amount"] for x in _cf_general)
                 _donation_next_cf: list[dict] = []
+                _donation_status: dict | None = None
                 if (_don_special + _don_general + _don_nondes
                         + _prior_special + _prior_general) > 0:
                     # 기준소득금액 = 차가감소득금액 + 특례 + 일반기부금 (비지정 제외)
@@ -1039,6 +1162,21 @@ def render(proj) -> None:
                         + roll_forward(_cf_general, _don.general_carryover_used,
                                        _don.general_excess, fy_end_val.year, "일반")
                     )
+                    # 기부금조정명세서(별지 제21호) 빌더 입력 — 영속 저장 (전체 이월: 소멸분 포함)
+                    _donation_status = {
+                        "base_income": _base_income, "loss_deduction": _cf_loss_ded,
+                        "special_donation": _don_special, "general_donation": _don_general,
+                        "nondesignated": _don_nondes,
+                        "special_limit": _don.special_limit, "general_limit": _don.general_limit,
+                        "general_rate": 0.10,
+                        "special_carryover_used": _don.special_carryover_used,
+                        "general_carryover_used": _don.general_carryover_used,
+                        "special_excess": _don.special_excess, "general_excess": _don.general_excess,
+                        "carryforward_deduction": _don.carryforward_deduction,
+                        "total_disallowed": _don.total_disallowed,
+                        "prior_carryforwards": list(mi.donation_carryforwards or []),
+                        "fy_end_year": fy_end_val.year,
+                    }
                     if _don.total_disallowed:
                         _add_detail("기부금 한도초과·비지정", _don.total_disallowed, "법§24",
                                     [f"기준소득금액 = 차가감소득금액 + 특례·일반기부금 = {_base_income:,}원 "
@@ -1141,6 +1279,8 @@ def render(proj) -> None:
                 "reserves": _new_reserves,   # 차기 '전기 유보' 승계 후보 (당기 발생분)
                 # 차기 이월 기부금 (미공제 이월분 + 당기 한도초과, 발생연도별 — 법§24⑤)
                 "donation_carryforwards": _donation_next_cf,
+                # 기부금조정명세서(별지 제21호) 빌더 입력 (None이면 기부금 없음)
+                "donation_status": _donation_status,
             }
             st.success("계산 완료 — 결과가 프로젝트에 저장되어 6단계 .taxproj로 내보내면 내년에 승계됩니다")
 
@@ -1203,10 +1343,14 @@ def render(proj) -> None:
                     _pnm = str(_p.get("name", ""))
                     _disp_sel(f"가지급금 인정이자 — {_pnm} ({int(_p.get('amount', 0)):,}원)",
                               f"인정이자|{_pnm}")
-                if r.unfair_transaction:
+                # 부당행위 — 건별 입력이 있으면 처분은 3단계에서 건별 결정됨(여기 단일 선택기 숨김)
+                if r.unfair_transaction and not getattr(r, "unfair_transaction_lines", None):
                     _disp_sel(f"부당행위계산 부인 ({r.unfair_transaction:,}원)", "부당행위계산 부인")
                     st.caption("※ 자본거래(불공정 합병·증자 등 영§88①8호·8호의2)로 귀속자에게 증여세가 과세되는 "
                                "금액은 귀속자 무관 **기타사외유출**(영§106①3호 자목) — 해당 시 '법인등' 선택")
+                elif getattr(r, "unfair_transaction_lines", None):
+                    st.caption("부당행위계산 부인 — 소득처분은 3단계 건별 입력에서 결정되어 별지15호에 "
+                               "건별 표시됩니다(귀속자별 배당·상여·기타사외유출).")
                 if r.welfare_disallowed:
                     _disp_sel(f"복리후생비 열거외 ({r.welfare_disallowed:,}원)", "복리후생비 (열거 외)")
                 _veh_personal = r.vehicle_disallowed - r.vehicle_depr_excess
@@ -1364,6 +1508,34 @@ def render(proj) -> None:
                 else:
                     st.caption(f"✓ 을표 추인 합계 {_ov_sum:,}원 = 소득금액 추인 입력 {_mi_rev:,}원 (정합)")
 
+        # ── 기부금조정명세서 (별지 제21호) — 발생연도별 이월·소멸·차기이월 ──
+        from src.forms.donation_status import build_donation_status
+        _dstat = build_donation_status((proj.tax_adjustments or {}).get("donation_status"))
+        if _dstat:
+            st.markdown(section_title(
+                "기부금조정명세서 (별지 제21호서식)",
+                f"한도기준 {_dstat['limit_base']:,}원 — 법§24②③(한도)·⑤⑥(이월 우선공제)",
+            ), unsafe_allow_html=True)
+            st.dataframe(pd.DataFrame([
+                {"구분": c["구분"], "지출액": f"{c['지출액']:,}", "이월 우선공제": f"{c['이월 우선공제']:,}",
+                 "손금산입한도": f"{c['손금산입한도']:,}", "한도율": c["한도율"],
+                 "당기 한도초과": f"{c['당기 한도초과']:,}"}
+                for c in _dstat["limit_calc"]
+            ]), use_container_width=True, hide_index=True)
+            if _dstat["carryforward_schedule"]:
+                st.caption("발생연도별 이월명세 (당기 소멸 명시 — 법§24⑤ 10년)")
+                st.dataframe(pd.DataFrame([
+                    {"발생연도": x["year"], "구분": x["type"], "전기말 이월": f"{x['opening']:,}",
+                     "당기 공제": f"{x['used']:,}", "당기 소멸": f"{x['expired']:,}",
+                     "차기 이월": f"{x['carryover']:,}", "발생구분": x["발생구분"]}
+                    for x in _dstat["carryforward_schedule"]
+                ]), use_container_width=True, hide_index=True)
+                _bn = _dstat["balance_note"]
+                (st.caption if _dstat["balance_ok"] else st.warning)(
+                    f"이월 당기공제 {_dstat['carryforward_deduction']:,}원 · "
+                    f"당기소멸 {_dstat['expired_total']:,}원 · 차기이월 {_dstat['next_carryforward_total']:,}원 — {_bn}"
+                )
+
         # ── 검토메모 — 발생 항목별 회계사 메모 (.taxproj에 저장되어 차기 참조) ──
         _nonzero_items = [
             (t, k, v, d, _adj_type(k))
@@ -1399,33 +1571,53 @@ def render(proj) -> None:
                 }
 
         # ── 세무 컨설팅 코멘트 (규칙엔진 발굴 — 회계사 채택 후 확정, ADR-002) ──
-        _topics = build_consulting_topics(
+        from src.rag import enrich_topics_with_references
+        _topics = enrich_topics_with_references(build_consulting_topics(
             company=proj.company, manual_input=proj.manual_input,
             result=r, fiscal_year_end=fy_end_val,
-        )
+        ))
         if _topics:
             st.markdown(section_title(
                 "세무 컨설팅 코멘트 (검토 후보)",
                 "재무자료·세무조정 결과에서 규칙엔진이 발굴한 자문 후보입니다. "
                 "모두 미확정 — 회계사가 요건 검토 후 채택·확정하세요 (AI가 적용을 확정하지 않습니다).",
             ), unsafe_allow_html=True)
+            from src.rules.consulting import SCENARIO_DISCLAIMER
+            from src.rag.reference_retriever import format_reference
+            from src.llm.consultant import _scenario_key
             _narr = st.session_state.get("consulting_narration") or {}
             if st.button("LLM으로 고객용 문장 다듬기 (선택)"):
                 from src.llm.consultant import narrate_topics
-                with st.spinner("로컬 LLM이 권고 문장을 다듬는 중..."):
+                with st.spinner("로컬 LLM이 시나리오 문장을 다듬는 중..."):
                     try:
                         _narr = narrate_topics(_topics)
                         st.session_state["consulting_narration"] = _narr
                     except Exception as _e:
                         st.warning(f"LLM 문장화 실패 — 규칙엔진 문장 사용 ({type(_e).__name__})")
             if _narr:
-                st.caption("LLM이 다듬은 문장입니다 — 숫자·법령·요건은 규칙엔진 값 그대로, 톤만 변경. 검토 후 사용하세요.")
+                st.caption("LLM이 다듬은 문장입니다 — 숫자·법령·요건은 규칙엔진 값 그대로, 시나리오 행동의 톤만 변경.")
             _cat_icon = {"리스크": "🔴", "특례·감면": "🟢", "정책": "🔵"}
             for _t in _topics:
                 with st.expander(f"{_cat_icon.get(_t.category, '·')} [{_t.category}] {_t.title} · {_t.severity}"):
-                    st.markdown(f"**발견:** {_t.finding}")
-                    st.markdown(f"**권고:** {_narr.get(_t.title, _t.suggestion)}")
-                    st.caption(f"근거: {_t.legal_basis} · 상태: {_t.status}")
+                    st.markdown(f"**현재상황:** {_t.situation}")
+                    st.markdown(f"**근거:** {_t.basis}")
+                    st.markdown(f"**결론 — 시나리오** ({SCENARIO_DISCLAIMER})")
+                    for _sc in (_t.scenarios or []):
+                        _act = _narr.get(_scenario_key(_t.title, _sc.name), _sc.action)
+                        _chk = " ⚖ 회계사 확인 필요" if _sc.needs_law_check else ""
+                        st.markdown(f"- **{_sc.name}{_chk}**")
+                        st.markdown(f"    - 행동: {_act}")
+                        st.markdown(f"    - 효과: {_sc.effect}")
+                        if _sc.requirement:
+                            st.markdown(f"    - 요건: {_sc.requirement}")
+                        if _sc.risk:
+                            st.markdown(f"    - 리스크: {_sc.risk}")
+                    st.caption(f"법령 근거: {_t.legal_basis} · 상태: {_t.status}")
+                    _refs = getattr(_t, "references", None) or []
+                    if _refs:
+                        st.markdown("**참고자료 (국세청 참고파일):**")
+                        for _ref in _refs:
+                            st.caption(format_reference(_ref))
 
         # ── 자동 세무조정 계산 내역 (산식 + 분개장 근거 드릴다운) ──────────
         _details: dict = st.session_state.get("calc_details") or {}
@@ -1509,6 +1701,8 @@ def render(proj) -> None:
         if depr_results:
             _n_mismatch = sum(1 for d in depr_results if d.limit_mismatch)
             _n_rate_missing = sum(1 for d in depr_results if d.rate_missing)
+            _n_bibang = sum(1 for d in depr_results if d.bibang_applied)
+            _n_bibang_review = sum(1 for d in depr_results if d.bibang_partial_review)
             with st.expander(
                 "감가상각 시부인 계산 근거 (자산별)"
                 + (f" — ⚠ 대장 기재 한도와 산식 불일치 {_n_mismatch}건" if _n_mismatch else "")
@@ -1523,11 +1717,22 @@ def render(proj) -> None:
                     st.caption(
                         f"※ {_n_rate_missing}건은 상각률·내용연수 정보가 없어 대장 기재값으로 폴백했습니다."
                     )
+                if _n_bibang:
+                    st.caption(
+                        f"※ {_n_bibang}건은 정률법 비망가액 특례(영§26⑥⑦) 적용 — 미상각잔액이 취득가액의 "
+                        f"5% 이하가 되어 비망가액 min(취득가액×5%, 1,000원)만 남기고 상각범위액에 가산했습니다."
+                    )
+                if _n_bibang_review:
+                    st.warning(
+                        f"⚠ {_n_bibang_review}건은 월할(상각월수<12) 자산이면서 미상각잔액이 취득가액 5% 임계 "
+                        "근처입니다 — 기중 처분 자산이면 잔여 미상각잔액은 상각이 아닌 처분손익으로 귀속되고"
+                        "(영§26⑨는 취득연도 월할만 규정), 단기 사업연도면 별도 처리가 필요하니 회계사 확인 바랍니다."
+                    )
                 st.dataframe(pd.DataFrame([
                     {
                         "자산코드": d.asset_code,
                         "자산명": d.asset_name,
-                        "방법": d.method,
+                        "방법": d.method + ("·비망가액특례" if d.bibang_applied else ""),
                         "상각기초가액": f"{d.base_amount:,}",
                         "상각률": f"{d.applied_rate:.3f}" if d.applied_rate else "—",
                         "월수": d.months,
@@ -1618,6 +1823,32 @@ def render(proj) -> None:
                 "'관련 금액'은 해당 계정의 거래 규모이며 세무조정액이 아닙니다. "
                 "검토필요 항목은 법령 근거 조문을 확인 후 수동 조정하세요."
             )
+
+            # 검토필요 항목 근거법령·검토포인트 (결정론적 — 네트워크 없음) + 원문 on-demand 조회
+            _law_cov = [c for c in coverage if c.status == "검토필요" and c.interpretation]
+            if _law_cov:
+                _law_cov.sort(key=lambda x: -x.amount_hint)
+                with st.expander(f"검토필요 항목 근거법령·검토포인트 ({len(_law_cov)}건)"):
+                    for c in _law_cov:
+                        st.markdown(f"**{c.item}**  ·  {c.legal_basis}")
+                        st.caption(f"검토포인트: {c.interpretation}")
+                    _opts = [c for c in _law_cov if c.law_id and c.jo]
+                    if _opts:
+                        st.divider()
+                        st.caption("조문 원문은 필요 시 선택 조회하세요 (PDF는 재현성 위해 검토포인트만 고정 수록).")
+                        _names = [c.item for c in _opts]
+                        _sel = st.selectbox("조문 원문 조회", range(len(_names)),
+                                            format_func=lambda i: _names[i], key="cov_law_sel")
+                        if st.button("원문 조회", key="cov_law_btn"):
+                            from src.rules.legal_basis import _fetch_article_cached
+                            _c = _opts[_sel]
+                            _txt = _fetch_article_cached(_c.law_id, _c.jo, str(fy_end_val))
+                            if _txt:
+                                st.markdown(f"**{_c.item}** — {_c.legal_basis}")
+                                st.text(_txt)
+                                st.caption(f"출처: 국가법령정보센터 law.go.kr · 기준일 {fy_end_val} 시행 원문")
+                            else:
+                                st.warning("조문 조회 실패 — 네트워크/LAW_API_KEY 확인 (자료 없음과 구분).")
 
             # ── 분개장 내역 드릴다운 ──
             drillable = [c for c in coverage if c.lines]

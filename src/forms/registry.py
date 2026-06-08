@@ -61,8 +61,12 @@ FORM_REGISTRY: dict[str, FormEntry] = {
         byl_no="별지제20호서식",
     ),
     "DONATION": FormEntry(
-        key="DONATION", name="기부금 조정명세서",
-        byl_no="별지제22호서식",
+        key="DONATION", name="기부금조정명세서",
+        byl_no="별지제21호서식", byl_seq="18055559", verified=True,
+    ),
+    "DONATION_DETAIL": FormEntry(
+        key="DONATION_DETAIL", name="기부금명세서",
+        byl_no="별지제22호서식", byl_seq="18055561", verified=True,
     ),
     "MIN_TAX": FormEntry(
         key="MIN_TAX", name="최저한세 조정계산서",

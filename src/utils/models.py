@@ -196,6 +196,7 @@ class TaxAdjustmentResult:
     # 익금산입
     deemed_interest: int = 0
     deemed_rental: int = 0
+    deemed_dividend: int = 0             # 의제배당 (법§16① — 감자·해산·합병·무상증자 등)
     unfair_transaction: int = 0          # 부당행위계산 부인 (법§52, 영§88 — 고가매입·저가양도 등)
     # 전기 △유보 당기 추인 익금산입 (회계사 명시 입력 — 감가상각·기부금이월 제외)
     prior_reserve_reversal_add: int = 0
@@ -235,6 +236,12 @@ class TaxAdjustmentResult:
 
     # 가지급금 인정이자 거래상대방별 익금산입 내역 — 소득처분 귀속자 입력용 (영§106)
     deemed_interest_parties: list = field(default_factory=list)  # [{"name", "amount"}]
+    # 부당행위계산 부인 건별 내역 — 건별 소득처분 (영§106). 비면 레거시 단일행.
+    unfair_transaction_lines: list = field(default_factory=list)  # [{"amount","disposition","basis","ref"}]
+    # 복리후생비(열거 외) 건별 내역 — 건별 소득처분 (영§45·106). 비면 레거시 단일행.
+    welfare_disallowed_lines: list = field(default_factory=list)
+    # 의제배당 건별 내역 (법§16①) — 사유별 익금산입.
+    deemed_dividend_lines: list = field(default_factory=list)
 
     rule_engine_version: str = "0.1.0"
     law_reference_date: date = field(default_factory=date.today)
@@ -255,7 +262,7 @@ class TaxAdjustmentResult:
             + self.securities_loss_disallowed + self.inventory_adjustment
             + self.welfare_disallowed + self.joint_expense_excess
             + self.non_business_expense + self.punitive_damages
-            + self.deemed_interest + self.deemed_rental
+            + self.deemed_interest + self.deemed_rental + self.deemed_dividend
             + self.unfair_transaction
             + self.prior_reserve_reversal_add
         )

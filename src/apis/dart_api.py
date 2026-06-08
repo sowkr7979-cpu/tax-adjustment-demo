@@ -187,8 +187,13 @@ class DartApiClient:
     def get_major_shareholders(
         self, corp_code: str, bsns_year: str | None = None,
     ) -> list[dict]:
-        """majorstock — 최대주주 및 특수관계인 현황 조회.
-        반환: [{"nm": str, "relate": str, "ownership_pct": str}, ...]
+        """hyslrSttus(최대주주 현황 — 정기보고서 주요정보) 조회.
+        반환: [{"nm": str, "relate": str, "ownership_pct": str(기말지분율)}, ...]
+
+        ⚠ 엔드포인트 주의: 'majorstock'(대량보유 5% 상황보고)은 nm/relate/지분율 필드가 없어
+          빈 목록이 된다(실데이터 검증 완료). 최대주주·특수관계인 명단+지분율은 'hyslrSttus'다.
+          단, hyslrSttus는 정기보고서(사업보고서 등) 제출 회사만 — 비상장 미제출 법인은 자료 없음.
+          (감사보고서 '특수관계자 거래' 주석은 Open API 구조화 제공 없음 — 주주명부·감사보고서 수기 확인.)
 
         구분 원칙 (실패 ≠ 자료 없음 — 특수관계인 판단은 세무상 중요):
           - 네트워크·HTTP·파싱 오류 → 예외를 그대로 던진다 (호출부가 '조회 실패' 안내)
@@ -201,10 +206,10 @@ class DartApiClient:
             "crtfc_key": self.api_key,
             "corp_code": corp_code,
             "bsns_year": year,
-            "reprt_code": "11011",
+            "reprt_code": "11011",   # 사업보고서
         }
         resp = self.session.get(
-            f"{DART_URL}/majorstock.json", params=params, timeout=30
+            f"{DART_URL}/hyslrSttus.json", params=params, timeout=30
         )
         resp.raise_for_status()
         data = resp.json()
@@ -214,7 +219,7 @@ class DartApiClient:
             return []
         if status != "000":
             raise DartApiError(
-                f"DART majorstock 오류 status={status}: {data.get('message', '')}"
+                f"DART hyslrSttus 오류 status={status}: {data.get('message', '')}"
             )
 
         return [

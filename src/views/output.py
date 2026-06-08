@@ -1,4 +1,4 @@
-"""6단계 — 출력 (감사추적 Excel·.taxproj·추천 서식)."""
+"""6단계 — 출력 (검토패키지 PDF·.taxproj·추천 서식)."""
 from __future__ import annotations
 import os
 import tempfile
@@ -7,18 +7,17 @@ from datetime import date
 import streamlit as st
 
 from src.forms.registry import recommend_forms
-from src.forms.audit_trail import generate_audit_trail
-from src.llm.ollama_client import OllamaClient
 from src.ui.styles import page_header, section_title, info_card
 from src.utils.safe_export import safe_filename
 from src.rules.consulting import build_consulting_topics
+from src.rag import enrich_topics_with_references
 from src.views.common import _parse_stored_date
 
 
 def render(proj) -> None:
     st.markdown(page_header(
         "출력 파일 생성",
-        "감사추적 Excel과 프로젝트 파일을 생성·다운로드합니다.",
+        "검토패키지 PDF와 프로젝트 파일을 생성·다운로드합니다.",
     ), unsafe_allow_html=True)
 
     if st.session_state.tax_result is None:
@@ -99,10 +98,13 @@ def render(proj) -> None:
                         reserve_decrease_overrides=(proj.tax_adjustments or {}).get("reserve_decrease_overrides", {}),
                         reserve_manual_rows=(proj.tax_adjustments or {}).get("reserve_manual_rows", []),
                         disposition_choices=(proj.tax_adjustments or {}).get("disposition_choices", {}),
-                        consulting_topics=build_consulting_topics(
-                            company=proj.company, manual_input=proj.manual_input,
-                            result=r, fiscal_year_end=fy_end_val,
+                        consulting_topics=enrich_topics_with_references(
+                            build_consulting_topics(
+                                company=proj.company, manual_input=proj.manual_input,
+                                result=r, fiscal_year_end=fy_end_val,
+                            ),
                         ),
+                        donation_status=(proj.tax_adjustments or {}).get("donation_status"),
                     )
                 except FileNotFoundError as e:
                     st.error(f"PDF 생성 실패 — 한글 폰트를 찾지 못했습니다: {e}")
@@ -130,53 +132,6 @@ def render(proj) -> None:
     st.caption(
         "※ 5단계에서 계산·검토메모를 마친 뒤 생성하세요 — 검토메모와 수정한 고객 설명 문구가 PDF에 반영됩니다."
     )
-
-    st.divider()
-
-    st.markdown(section_title(
-        "감사추적 Excel",
-        "LLM 판단 근거, 세무조정 계산 근거, 세액 계산 근거 3개 시트 포함",
-    ), unsafe_allow_html=True)
-
-    col_gen, _ = st.columns([1, 4])
-    with col_gen:
-        if st.button("감사추적 Excel 생성", use_container_width=True):
-            # 임시파일은 메모리로 읽은 직후 삭제 — 고객명·세무조정 결과가 임시폴더에 남지 않도록
-            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-                out_path = tmp.name
-            try:
-                generate_audit_trail(
-                    llm_results=st.session_state.llm_results,
-                    tax_result=r,
-                    output_path=out_path,
-                    company_name=proj.company.name,
-                    model_name=OllamaClient().model,
-                    rule_engine_version="0.1.0",
-                    law_ref_date=_parse_stored_date(proj.company.fiscal_year_end, date.today()),
-                    prior_reserves=proj.manual_input.prior_reserves,
-                    depr_denial_end=int((proj.tax_adjustments or {}).get("depreciation_denial_end", 0)),
-                    bad_debt_method=proj.manual_input.bad_debt_method,
-                    reserve_decrease_overrides=(proj.tax_adjustments or {}).get("reserve_decrease_overrides", {}),
-                    reserve_manual_rows=(proj.tax_adjustments or {}).get("reserve_manual_rows", []),
-                    disposition_choices=(proj.tax_adjustments or {}).get("disposition_choices", {}),
-                )
-                with open(out_path, "rb") as f:
-                    _audit_bytes = f.read()
-            finally:
-                try:
-                    os.unlink(out_path)
-                except OSError:
-                    pass
-            st.download_button(
-                "다운로드 — 감사추적 Excel",
-                data=_audit_bytes,
-                file_name=(
-                    f"감사추적_{safe_filename(proj.company.name)}"
-                    f"_{proj.company.fiscal_year_end}.xlsx"
-                ),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
 
     st.divider()
 
