@@ -51,7 +51,7 @@ def render(proj, llm_ok: bool) -> None:
 
     col_r1, _ = st.columns([1, 4])
     with col_r1:
-        if st.button("1차 규칙 분류 실행", use_container_width=True):
+        if st.button("1차 규칙 분류 실행", width="stretch"):
             with st.spinner("계정코드 기반 분류 중..."):
                 rule_results = classify_all(loader.journals, rp_set)
                 target = [r for r in rule_results if r.forward_to_stage2]
@@ -82,7 +82,7 @@ def render(proj, llm_ok: bool) -> None:
                     "분류 근거": ", ".join(sorted({x.forward_reason or "" for x in rs} - {""})),
                 }
                 for code, rs in sorted(_by_issue.items(), key=lambda kv: -len(kv[1]))
-            ]), use_container_width=True, hide_index=True)
+            ]), width="stretch", hide_index=True)
 
             # 이슈코드 선택 → 분개 내역
             _issue_names = [f"{issue_label(c)} ({len(rs):,}건)" for c, rs in sorted(_by_issue.items(), key=lambda kv: -len(kv[1]))]
@@ -117,7 +117,7 @@ def render(proj, llm_ok: bool) -> None:
             if len(_matched) > 1000:
                 st.caption(f"⚠ {len(_matched):,}건 중 1,000건만 표시 — 전체는 CSV로 다운로드하세요.")
             st.dataframe(
-                striped_by_group(_rdf), use_container_width=True,
+                striped_by_group(_rdf), width="stretch",
                 hide_index=True, height=360,
             )
             _rcsv_df = pd.DataFrame([
@@ -193,7 +193,7 @@ def render(proj, llm_ok: bool) -> None:
     with col_r2:
         run_llm = st.button(
             "선택 큐 AI 보조 실행" if not _job_running else "분석 실행 중...",
-            use_container_width=True,
+            width="stretch",
             disabled=(
                 "rule_results" not in st.session_state or not llm_ok or _job_running
                 or (_selected_issues is not None and not _selected_issues)
@@ -292,5 +292,5 @@ def render(proj, llm_ok: bool) -> None:
             }
             for r in st.session_state.llm_results
         ]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, height=380)
+        st.dataframe(pd.DataFrame(rows), width="stretch", height=380)
 

@@ -78,7 +78,7 @@ with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── 데모 데이터 (면접관용 — 업로드 없이 결과 확인) ──────────────────────
-    if st.button("🧪 데모 데이터 불러오기", use_container_width=True):
+    if st.button("🧪 데모 데이터 불러오기", width="stretch"):
         from src.demo.sample_case import build_demo_loader, build_demo_project
 
         st.session_state.loader = build_demo_loader()

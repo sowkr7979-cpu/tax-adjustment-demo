@@ -123,7 +123,7 @@ def render(proj) -> None:
         btn_label = "DART 검색" if has_dart_key else "API키 없음"
         search_clicked = st.button(
             btn_label,
-            use_container_width=True,
+            width="stretch",
             disabled=not has_dart_key,
         )
 
@@ -193,7 +193,7 @@ def render(proj) -> None:
 
         col_apply, col_clear = st.columns([1, 5], gap="medium")
         with col_apply:
-            if st.button("자동 입력", use_container_width=True):
+            if st.button("자동 입력", width="stretch"):
                 selected = results[sel_idx]
                 corp_code = selected["corp_code"]
 
@@ -518,7 +518,7 @@ def render(proj) -> None:
     _edited = st.data_editor(
         _rp_df,
         num_rows="dynamic",
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "이름": st.column_config.TextColumn("이름", required=True, width="medium"),
@@ -640,7 +640,7 @@ def render(proj) -> None:
         )
         st.dataframe(
             _prev_disp.style.apply(_style_row, axis=1),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
         _cap = f"지분율 합계 {_total:g}%"
         if _total_sh:

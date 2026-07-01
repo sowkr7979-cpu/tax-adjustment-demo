@@ -246,7 +246,7 @@ def render(proj) -> None:
 
     col_v, _ = st.columns([1, 3])
     with col_v:
-        if st.button("입력 검증", use_container_width=True):
+        if st.button("입력 검증", width="stretch"):
             errs = validate_manual_input(proj.manual_input, fy_end_val)
             if errs:
                 for e in errs:

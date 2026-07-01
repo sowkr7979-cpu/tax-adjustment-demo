@@ -198,7 +198,7 @@ def _render_nonbiz_drilldown(mi: ManualInput, loader, det) -> None:
             "금액": st.column_config.NumberColumn("금액 (원)", format="%d"),
         },
         disabled=["거래처명", "적요", "금액", "비고"],
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
         key=f"nonbiz_lines_{acct_code}_{acct_name}",
         height=min(360, 60 + 36 * len(lines)),
     )
@@ -237,7 +237,7 @@ def _render_nonbiz_drilldown(mi: ManualInput, loader, det) -> None:
             f"{mi.non_business_asset_balance:,}원**"
         )
         st.dataframe(
-            _sumdf, use_container_width=True, hide_index=True,
+            _sumdf, width="stretch", hide_index=True,
             column_config={"금액": st.column_config.NumberColumn("금액 (원)", format="%d")},
         )
     else:
@@ -337,7 +337,7 @@ def _render_nonbiz_assets(mi: ManualInput, loader) -> None:
             "기말잔액": st.column_config.NumberColumn("기말잔액 (원)", format="%d"),
         },
         disabled=["계정명", "기말잔액", "출처"],
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
         key="nonbiz_asset_editor",
         height=min(320, 60 + 36 * len(cands)),
     )
@@ -444,7 +444,7 @@ def _render_loan_classifier(mi: ManualInput, journals: list, related_parties: li
             "_key": None,
         },
         disabled=["특수관계인", "날짜", "계정과목", "적요", "거래처", "차변", "대변"],
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
         key="related_loan_editor",
         height=min(320, 60 + 36 * len(df)),
     )
@@ -487,7 +487,7 @@ def _render_loan_classifier(mi: ManualInput, journals: list, related_parties: li
     c2.metric("가수금 상계", f"{sum(max(0, v) for v in _susu_by_cp.values()):,}원")
     c3.metric("상계 후 잔액 합계", f"{_net_total:,}원")
     if _net_rows:
-        st.dataframe(pd.DataFrame(_net_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(_net_rows), width="stretch", hide_index=True)
     st.caption(
         "※ 가수금은 가수금·주임종단기차입금 분개에서 동일 거래처 금액을 자동 탐지해 상계했습니다 "
         "(동일인 가지급금·가수금 상계 — 인정이자 적수는 규칙§44, 지급이자 적수는 영§53③). "
@@ -530,7 +530,7 @@ def _render_loan_classifier(mi: ManualInput, journals: list, related_parties: li
             "기초이월 가지급금": st.column_config.NumberColumn("기초이월 가지급금 (원)", format="%d", min_value=0),
             "수취 약정이자": st.column_config.NumberColumn("수취 약정이자 (원)", format="%d", min_value=0),
         },
-        use_container_width=True, hide_index=True, key="related_loan_parties_editor",
+        width="stretch", hide_index=True, key="related_loan_parties_editor",
     )
     mi.related_loan_parties = [
         {
@@ -599,7 +599,7 @@ def _render_deposit_classifier(mi: ManualInput, journals: list) -> bool:
             "_key": None,
         },
         disabled=["구분", "날짜", "계정과목", "적요", "거래처(임차인)", "차변", "대변"],
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
         key="rental_deposit_editor",
         height=min(300, 60 + 36 * len(df)),
     )
@@ -622,7 +622,7 @@ def _render_deposit_classifier(mi: ManualInput, journals: list) -> bool:
         column_config={
             "기초 보증금": st.column_config.NumberColumn("기초 보증금 (원)", format="%d", min_value=0),
         },
-        use_container_width=True, hide_index=True, key="rental_deposit_items_editor",
+        width="stretch", hide_index=True, key="rental_deposit_items_editor",
     )
     mi.rental_deposit_items = [
         {"물건/임차인": str(r["물건/임차인"]).strip(), "기초 보증금": int(r["기초 보증금"] or 0)}
@@ -702,7 +702,7 @@ def _render_interest_classifier(mi: ManualInput, journals: list) -> bool:
             "_key": None,
         },
         disabled=["날짜", "계정과목", "적요", "거래처", "금액"],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key="interest_line_editor",
         height=min(400, 60 + 36 * len(df)),
@@ -782,7 +782,7 @@ def _render_donation_classifier(mi: ManualInput, journals: list) -> bool:
             "_key": None,  # 숨김
         },
         disabled=["날짜", "전표번호", "적요", "거래처", "금액"],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key="donation_line_editor",
     )
@@ -883,7 +883,7 @@ def _render_line_check(
             "_key": None,
         },
         disabled=["날짜", "적요", "거래처", "금액"],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key=f"line_check_{attr}",
         height=min(250, 60 + 36 * len(df)),
@@ -948,7 +948,7 @@ def _render_welfare_table(mi: ManualInput, lines: list) -> None:
             "_key": None,
         },
         disabled=["날짜", "적요", "거래처", "금액"],
-        hide_index=True, use_container_width=True, key="welfare_editor",
+        hide_index=True, width="stretch", key="welfare_editor",
         height=min(360, 60 + 36 * len(df)),
     )
     answers = []
@@ -1132,7 +1132,7 @@ def render_adjustment_data(
                             "건수": len(lns), "금액": f"{sum(x.debit for x in lns):,}",
                         }
                         for (g, w, a), lns in sorted(_agg.items())
-                    ]), use_container_width=True, hide_index=True)
+                    ]), width="stretch", hide_index=True)
                     with st.expander("분개 라인 상세 보기"):
                         from src.ui.styles import striped_by_group
                         st.dataframe(striped_by_group(pd.DataFrame([
@@ -1144,7 +1144,7 @@ def render_adjustment_data(
                             }
                             for (g, w, a), lns in sorted(_agg.items())
                             for x in lns
-                        ])), use_container_width=True, hide_index=True, height=300)
+                        ])), width="stretch", hide_index=True, height=300)
         else:
             st.caption("분개장에서 상여금·퇴직급여 거래처를 찾지 못했습니다 — 금액을 직접 입력하세요.")
             c1, c2 = st.columns(2)
@@ -1248,7 +1248,7 @@ def render_adjustment_data(
                     "감가상각비": st.column_config.NumberColumn("감가상각비 (원)", format="%d"),
                 },
                 disabled=["자산코드", "자산명", "감가상각비"],
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
                 key="vehicle_asset_editor",
             )
             mi.vehicle_asset_checks = dict(zip(_vedit["자산코드"], _vedit["해당"].astype(bool)))
@@ -1319,7 +1319,7 @@ def render_adjustment_data(
                 "type": st.column_config.SelectboxColumn("종류", options=["특례", "일반"]),
                 "amount": st.column_config.NumberColumn("이월액 (원)", format="%d", min_value=0),
             },
-            use_container_width=True, hide_index=True, key="donation_cf_editor",
+            width="stretch", hide_index=True, key="donation_cf_editor",
         )
         mi.donation_carryforwards = [
             {"year": int(row["year"]), "type": str(row["type"] or "일반"),
@@ -1888,7 +1888,7 @@ def render_adjustment_data(
                         "대변": f"{ln.credit:,}" if ln.credit else "",
                     }
                     for ln in _rp_lines[:300]
-                ]), use_container_width=True, hide_index=True, height=240)
+                ]), width="stretch", hide_index=True, height=240)
                 if len(_rp_lines) > 300:
                     st.caption(f"{len(_rp_lines):,}건 중 300건만 표시")
             else:

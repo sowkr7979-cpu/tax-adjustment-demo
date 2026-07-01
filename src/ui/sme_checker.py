@@ -183,7 +183,7 @@ def render_sme_checker(prefill: dict | None = None) -> dict:
                 }
                 for s in shareholders
             ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
         st.caption(
             "※ DART 주주현황 기준. 특수관계인 주석과 다를 수 있으므로 최종 확인 필요."
         )

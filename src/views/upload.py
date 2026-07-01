@@ -74,7 +74,7 @@ def render(loader: SmartALoader) -> None:
 
     col_btn, _ = st.columns([1, 3], gap="medium")
     with col_btn:
-        load_clicked = st.button("파일 로드 및 검증", use_container_width=True)
+        load_clicked = st.button("파일 로드 및 검증", width="stretch")
 
     if load_clicked:
         with st.spinner("파일 파싱 중..."):
@@ -126,7 +126,7 @@ def render(loader: SmartALoader) -> None:
                     "비고": " · ".join(m.get("notes", [])),
                 }
                 for name, m in loader.file_meta.items()
-            ]), use_container_width=True, hide_index=True)
+            ]), width="stretch", hide_index=True)
             # 인식된 컬럼 확인 — 컬럼 매핑 오류를 사람이 즉시 발견할 수 있게
             _fm_names = list(loader.file_meta.keys())
             _fm_sel = st.selectbox(

@@ -107,7 +107,7 @@ def render(proj) -> None:
 
     col_btn, _ = st.columns([1, 4])
     with col_btn:
-        if st.button("규칙 엔진 계산 실행", use_container_width=True, disabled=not _ni_ready):
+        if st.button("규칙 엔진 계산 실행", width="stretch", disabled=not _ni_ready):
             with st.spinner("세무조정 계산 중..."):
                 result = TaxAdjustmentResult(
                     fiscal_year_start=fy_start,
@@ -1592,13 +1592,13 @@ def render(proj) -> None:
             st.dataframe(pd.DataFrame(
                 [(t, k, f"{v:,}", b, d, _adj_type(k)) for t, k, v, b, d in add_items],
                 columns=["구분", "항목", "금액 (원)", "근거", "소득처분", "조정구분"],
-            ), use_container_width=True, hide_index=True)
+            ), width="stretch", hide_index=True)
         with col_ded:
             st.markdown(f"**차감조정 — 합계 {r.total_deduct:,}원**")
             st.dataframe(pd.DataFrame(
                 [(t, k, f"{v:,}", b, d, _adj_type(k)) for t, k, v, b, d in deduct_items],
                 columns=["구분", "항목", "금액 (원)", "근거", "소득처분", "조정구분"],
-            ), use_container_width=True, hide_index=True)
+            ), width="stretch", hide_index=True)
             st.caption(
                 "소득처분은 **후보**입니다 — 귀속자(대표자·주주·임원)에 따라 상여·배당·기타사외유출이 "
                 "달라지므로 최종 확인 필요. 결산조정 항목은 장부 계상 여부가 손금 인정의 전제입니다."
@@ -1638,7 +1638,7 @@ def render(proj) -> None:
                 column_config={"당기감소(추인)": st.column_config.NumberColumn(
                     "당기감소(추인)", format="%d", help="환입·추인액 — 입력 시 기말이 재계산됩니다")},
                 disabled=["과목", "기초", "증가", "처분", "검토"],
-                use_container_width=True, hide_index=True, key="reserve_auto_editor",
+                width="stretch", hide_index=True, key="reserve_auto_editor",
             )
             # 자동 기준선과 다른 감소만 override로 저장 (같으면 제거 → 검토 플래그 유지)
             _new_ov = {}
@@ -1663,7 +1663,7 @@ def render(proj) -> None:
                         "감소": st.column_config.NumberColumn("당기감소", format="%d"),
                         "처분": st.column_config.SelectboxColumn("처분", options=["유보", "△유보"]),
                     },
-                    use_container_width=True, hide_index=True, key="reserve_manual_editor",
+                    width="stretch", hide_index=True, key="reserve_manual_editor",
                 )
                 _manual = [
                     {"과목": str(row["과목"]).strip(),
@@ -1686,7 +1686,7 @@ def render(proj) -> None:
                  "검토": "⚠ 추인확인" if x["검토"] else "✓"}
                 for x in _reserve_rows
             ])
-            st.dataframe(_fdf, use_container_width=True, hide_index=True)
+            st.dataframe(_fdf, width="stretch", hide_index=True)
             rc1, rc2, rc3 = st.columns(3)
             rc1.metric("유보 기말 합계", f"{_rt['유보_기말']:,}원")
             rc2.metric("△유보 기말 합계", f"{_rt['△유보_기말']:,}원")
@@ -1726,7 +1726,7 @@ def render(proj) -> None:
                  "손금산입한도": f"{c['손금산입한도']:,}", "한도율": c["한도율"],
                  "당기 한도초과": f"{c['당기 한도초과']:,}"}
                 for c in _dstat["limit_calc"]
-            ]), use_container_width=True, hide_index=True)
+            ]), width="stretch", hide_index=True)
             if _dstat["carryforward_schedule"]:
                 st.caption("발생연도별 이월명세 (당기 소멸 명시 — 법§24⑤ 10년)")
                 st.dataframe(pd.DataFrame([
@@ -1734,7 +1734,7 @@ def render(proj) -> None:
                      "당기 공제": f"{x['used']:,}", "당기 소멸": f"{x['expired']:,}",
                      "차기 이월": f"{x['carryover']:,}", "발생구분": x["발생구분"]}
                     for x in _dstat["carryforward_schedule"]
-                ]), use_container_width=True, hide_index=True)
+                ]), width="stretch", hide_index=True)
                 _bn = _dstat["balance_note"]
                 (st.caption if _dstat["balance_ok"] else st.warning)(
                     f"이월 당기공제 {_dstat['carryforward_deduction']:,}원 · "
@@ -1765,7 +1765,7 @@ def render(proj) -> None:
                         ),
                     },
                     disabled=["항목", "구분", "조정구분", "금액", "소득처분(후보)"],
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                     key="review_memo_editor",
                 )
                 if proj.tax_adjustments is None:
@@ -1875,7 +1875,7 @@ def render(proj) -> None:
                 if len(_dlines) > 1000:
                     st.caption(f"⚠ {len(_dlines):,}건 중 1,000건만 표시 — 전체는 CSV로 다운로드하세요.")
                 st.dataframe(
-                    striped_by_group(_ddf), use_container_width=True,
+                    striped_by_group(_ddf), width="stretch",
                     hide_index=True, height=320,
                 )
                 _dcsv = safe_df(pd.DataFrame([
@@ -1951,7 +1951,7 @@ def render(proj) -> None:
                         "당기말 부인누계": f"{d.denial_end:,}",
                     }
                     for d in depr_results
-                ]), use_container_width=True, hide_index=True, height=320)
+                ]), width="stretch", hide_index=True, height=320)
                 st.caption(
                     "상각범위액 = 상각기초가액 × 상각률 × 월수/12 (영§26② — law.go.kr 원문 확인). "
                     "정액법: 기초가액 = 취득가액(장부가+상각누계+신규취득) / "
@@ -2023,7 +2023,7 @@ def render(proj) -> None:
                                    -x.amount_hint),
                 )
             ])
-            st.dataframe(cov_df, use_container_width=True, hide_index=True, height=560)
+            st.dataframe(cov_df, width="stretch", hide_index=True, height=560)
             st.caption(
                 "'관련 금액'은 해당 계정의 거래 규모이며 세무조정액이 아닙니다. "
                 "검토필요 항목은 법령 근거 조문을 확인 후 수동 조정하세요."
@@ -2088,7 +2088,7 @@ def render(proj) -> None:
                     for ln in _sel_cov.lines
                 ])
                 st.dataframe(
-                    striped_by_group(_lines_df), use_container_width=True,
+                    striped_by_group(_lines_df), width="stretch",
                     hide_index=True, height=400,
                 )
                 _csv = safe_df(_lines_df).to_csv(index=False).encode("utf-8-sig")
@@ -2130,7 +2130,7 @@ def render(proj) -> None:
                             "금액": f"{ln.debit:,}", "증빙": ln.evidence_type,
                         }
                         for ln in agg.entertainment.no_receipt_lines[:50]
-                    ]), use_container_width=True, hide_index=True)
+                    ]), width="stretch", hide_index=True)
 
     # ════════ 리뷰 흐름 도구 — 계산 결과와 무관하게 현재 상태 기준 표시 ════════
     import pandas as pd
@@ -2164,7 +2164,7 @@ def render(proj) -> None:
             }
             for q in sorted(_requests, key=lambda x: {"High": 0, "Medium": 1, "Low": 2}[x.risk])
         ])
-        st.dataframe(_req_df, use_container_width=True, hide_index=True)
+        st.dataframe(_req_df, width="stretch", hide_index=True)
         _req_txt = f"[{proj.company.name or '회사'}] 세무조정 진행을 위한 자료요청 목록\n" + \
             f"(사업연도 {fy_start} ~ {fy_end_val})\n\n" + "\n".join(
                 f"{i+1}. {q.item}\n   - 사유: {q.reason}\n   - 관련: {q.related}"
@@ -2202,7 +2202,7 @@ def render(proj) -> None:
             _yoy_show = _yoy.copy()
             for c in ("당기", "전기", "증감"):
                 _yoy_show[c] = _yoy_show[c].map("{:,}".format)
-            st.dataframe(_yoy_show, use_container_width=True, hide_index=True, height=400)
+            st.dataframe(_yoy_show, width="stretch", hide_index=True, height=400)
             st.download_button(
                 "증감분석 CSV 다운로드",
                 data=safe_df(_yoy).to_csv(index=False).encode("utf-8-sig"),
@@ -2232,7 +2232,7 @@ def render(proj) -> None:
                     _bs_show = _bs_chk.copy()
                     for c in ("당기 기초잔액", "전기 기말잔액", "차이"):
                         _bs_show[c] = _bs_show[c].map("{:,}".format)
-                    st.dataframe(_bs_show, use_container_width=True, hide_index=True,
+                    st.dataframe(_bs_show, width="stretch", hide_index=True,
                                  height=min(400, 60 + 36 * len(_bs_show)))
                     st.download_button(
                         "기초잔액 대사 CSV 다운로드",
@@ -2260,7 +2260,7 @@ def render(proj) -> None:
             _cost_show = _cost_yoy.copy()
             for c in ("당기", "전기", "증감"):
                 _cost_show[c] = _cost_show[c].map("{:,}".format)
-            st.dataframe(_cost_show, use_container_width=True, hide_index=True, height=400)
+            st.dataframe(_cost_show, width="stretch", hide_index=True, height=400)
             st.download_button(
                 "원가 증감분석 CSV 다운로드",
                 data=safe_df(_cost_yoy).to_csv(index=False).encode("utf-8-sig"),

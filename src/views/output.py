@@ -39,7 +39,7 @@ def render(proj) -> None:
 
     col_pdf, _ = st.columns([1, 4])
     with col_pdf:
-        if st.button("검토패키지 PDF 생성", use_container_width=True):
+        if st.button("검토패키지 PDF 생성", width="stretch"):
             with st.spinner("PDF 생성 중..."):
                 from src.rules.aggregator import aggregate_journals
                 from src.rules.data_requests import build_data_requests, assess_risk
@@ -143,7 +143,7 @@ def render(proj) -> None:
                     data=_pdf_bytes,
                     file_name=f"세무조정검토패키지_{safe_filename(proj.company.name)}_{proj.company.fiscal_year_end}.pdf",
                     mime="application/pdf",
-                    use_container_width=True,
+                    width="stretch",
                 )
     st.caption(
         "※ 5단계에서 계산·검토메모를 마친 뒤 생성하세요 — 검토메모와 수정한 고객 설명 문구가 PDF에 반영됩니다."
@@ -158,7 +158,7 @@ def render(proj) -> None:
 
     col_proj, _ = st.columns([1, 4])
     with col_proj:
-        if st.button("프로젝트 파일 생성", use_container_width=True):
+        if st.button("프로젝트 파일 생성", width="stretch"):
             # 임시파일은 메모리로 읽은 직후 삭제 (고객자료 잔존 방지)
             with tempfile.NamedTemporaryFile(suffix=".taxproj", delete=False) as tmp:
                 _proj_path = tmp.name
@@ -179,7 +179,7 @@ def render(proj) -> None:
                     f"_{proj.company.fiscal_year_end}.taxproj"
                 ),
                 mime="application/json",
-                use_container_width=True,
+                width="stretch",
             )
 
     st.divider()
@@ -213,7 +213,7 @@ def render(proj) -> None:
             }
             for f in forms
         ]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.caption("해당 서식 없음")
 
@@ -237,7 +237,7 @@ def render(proj) -> None:
     else:
         col_rf, _ = st.columns([1, 4])
         with col_rf:
-            _gen = st.button("소급공제법인세액환급신청서 생성", use_container_width=True)
+            _gen = st.button("소급공제법인세액환급신청서 생성", width="stretch")
         if _gen:
             from src.rules.loss_carryback import compute_loss_carryback_from_manual
             from src.forms.refund_request import build_refund_request
@@ -259,9 +259,9 @@ def render(proj) -> None:
                     "직전 사업연도 세율테이블이 엔진에 미수록 — 3단계에서 ⑭(소급공제 후 산출세액)을 "
                     "직접 입력해야 정확합니다(입력 전 환급액 0 보수처리).")
             st.markdown("**① 신청인**")
-            st.dataframe(pd.DataFrame(form["applicant"]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(form["applicant"]), width="stretch", hide_index=True)
             st.markdown("**② 환급신청 내용 (법§72①·영§110①)**")
-            st.dataframe(pd.DataFrame(form["refund_rows"]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(form["refund_rows"]), width="stretch", hide_index=True)
             for _n in form["notes"]:
                 st.caption("• " + _n)
             st.caption(
