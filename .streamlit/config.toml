@@ -1,16 +1,17 @@
 [theme]
-primaryColor = "#0071e3"
-backgroundColor = "#fbfbfd"
-secondaryBackgroundColor = "#f5f5f7"
-textColor = "#1d1d1f"
+primaryColor = "#10a37f"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f7f7f8"
+textColor = "#0d0d0d"
 font = "sans serif"
 
 [browser]
 gatherUsageStats = false
 
 [server]
-# 로컬 전용 — 동일 네트워크의 타 기기에서 고객 재무자료 화면 접근 차단
-address = "127.0.0.1"
+# 배포(Streamlit Cloud)에서는 플랫폼이 바인딩을 관리하므로 address를 고정하지 않는다.
+# 로컬에서 실무(고객 재무자료)로 쓸 때는 아래 줄의 주석을 해제해 외부 접근을 차단하세요.
+# address = "127.0.0.1"
 headless = true
 enableXsrfProtection = true
 enableCORS = true

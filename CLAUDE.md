@@ -29,10 +29,11 @@ KICPA의 법인세 세무조정 용역 보조도구. 더존 Smart A·WEHAGO 재�
 src/app.py        라우팅·사이드바만 (~120줄)
 src/views/        1~6단계 화면 모듈 (basic_info/upload/manual/llm/calc/output + common)
 src/parsers/      normalizer(표준화 파이프라인) + smart_a(더존·WEHAGO 파서)
-src/rules/        규칙 엔진 (산식·적수·legal_basis·coverage·aggregator)
-src/llm/          Ollama 클라이언트·분석기 (Level 1 RAG — 조문 프롬프트 첨부)
-src/apis/         law.go.kr·DART 클라이언트 (실패 ≠ 자료 없음 구분)
-src/forms/        감사추적 Excel·별지 추천 / src/project/ .taxproj
+src/rules/        규칙 엔진 (산식·적수·legal_basis·coverage[+검토필요 근거법령]·aggregator·consulting·vehicle_match)
+src/rag/          국가법령 외 — 국세청 참고파일 키워드 검색 (reference_retriever, 벡터DB 없음, 컨설팅·PDF 보조)
+src/llm/          Ollama 클라이언트·분석기 (Level 1 RAG — 조문 프롬프트 첨부) + consultant(컨설팅 문장화)
+src/apis/         law.go.kr·DART 클라이언트 (실패 ≠ 자료 없음 구분 / 최대주주는 hyslrSttus)
+src/forms/        검토패키지 PDF·감사추적 Excel·별지 추천 / src/project/ .taxproj
 ```
 
 ## 명령어

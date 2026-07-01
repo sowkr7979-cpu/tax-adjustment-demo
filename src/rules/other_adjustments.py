@@ -1,16 +1,4 @@
-"""기타 세무조정 — 벌과금(법법§21), 임원상여(법법§26), 외화환산(법법§42)."""
-from dataclasses import dataclass
-
-
-@dataclass
-class ForexResult:
-    account_code: str
-    foreign_currency: str
-    foreign_amount: float
-    period_end_rate: float
-    book_value: int
-    tax_value: int
-    adjustment: int     # 양수: 익금산입, 음수: 손금산입
+"""기타 세무조정 — 벌과금(법§21), 임원 상여·퇴직(법§26)."""
 
 
 def calc_penalty(penalty_total: int) -> int:
@@ -40,25 +28,3 @@ def calc_officer_retirement_excess(
     """
     limit = int(last_salary * allowance_rate * tenure_years)
     return max(0, paid_amount - limit)
-
-
-def calc_forex_adjustment(
-    *,
-    account_code: str,
-    foreign_currency: str,
-    foreign_amount: float,
-    period_end_rate: float,
-    book_value: int,
-) -> ForexResult:
-    """외화자산·부채 기말 평가차손익 세무조정 (법§42)."""
-    tax_value = int(foreign_amount * period_end_rate)
-    adjustment = tax_value - book_value
-    return ForexResult(
-        account_code=account_code,
-        foreign_currency=foreign_currency,
-        foreign_amount=foreign_amount,
-        period_end_rate=period_end_rate,
-        book_value=book_value,
-        tax_value=tax_value,
-        adjustment=adjustment,
-    )

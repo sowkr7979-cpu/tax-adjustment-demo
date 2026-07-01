@@ -231,6 +231,60 @@ def parse_balance_sheet(path: str | Path) -> pd.DataFrame:
     return df
 
 
+# ── 계정별 세부명세서 (결산부속명세서 — 거래처별 라인) ──────────────────────────
+
+def _account_details_from_df(df: pd.DataFrame) -> pd.DataFrame:
+    """블록 반복형 계정별 명세 DataFrame → 거래처별 세부 라인만 추출 (순수 함수).
+
+    각 계정 블록은 'XXX명세서' 제목·기간·회사·헤더·세부라인·'합 계'로 구성된다.
+    세부 라인 = 계정코드가 숫자로 시작 + 계정명 존재. 제목·반복헤더·합계·기간행은 제외.
+    같은 계정이 여러 블록(페이지)에 나뉘어도 계정코드·계정명으로 자연 병합된다.
+    columns: 계정코드, 계정명, 적요, 거래처코드, 거래처명, 금액, 비고
+    """
+    def _c(row, *names) -> str:
+        for n in names:
+            v = row.get(n)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        return ""
+
+    rows = []
+    for _, r in df.iterrows():
+        code = _c(r, "계정코드", "코드")
+        name = _c(r, "계정명", "계정과목명", "계정과목")
+        # 세부 라인만: 계정코드는 숫자로 시작 (제목·헤더='코드'·합계='합 계'·회사명 제외)
+        if not name or not re.match(r"^\d", code):
+            continue
+        rows.append({
+            "계정코드":   code,
+            "계정명":     name,
+            "적요":       str(r.get("적요", "") or "").strip(),
+            "거래처코드":  _c(r, "거래처코드", "코드.1"),
+            "거래처명":   _c(r, "거래처명", "거래처"),
+            "금액":       _to_int(str(r.get("금액", "") or "")),
+            "비고":       str(r.get("비고", "") or "").strip(),
+        })
+    return pd.DataFrame(
+        rows, columns=["계정코드", "계정명", "적요", "거래처코드", "거래처명", "금액", "비고"]
+    )
+
+
+def parse_account_details(path: str | Path) -> pd.DataFrame:
+    """결산부속명세서(계정별 세부명세) → 거래처별 세부 라인 DataFrame.
+
+    업무무관자산 드릴다운(계정 선택 → 세부 라인 선택)에 사용된다. 단일 시트에
+    계정별 블록이 반복되는 더존·전산 결산부속명세서 양식을 가정한다.
+    """
+    df = _read_excel(path)
+    cols = {str(c).strip() for c in df.columns}
+    if "금액" not in cols or not ({"계정과목명", "계정명", "계정과목"} & cols):
+        raise ValueError("계정별 세부명세서 형식이 아닙니다 (계정과목명·금액 컬럼 필요)")
+    out = _account_details_from_df(df)
+    if out.empty:
+        raise ValueError("세부 라인을 찾지 못했습니다 — 계정별 명세서(결산부속명세서) 형식인지 확인하세요")
+    return out
+
+
 # ── 손익계산서 ─────────────────────────────────────────────────────────────────
 
 def parse_income_statement(path: str | Path) -> pd.DataFrame:
@@ -516,7 +570,8 @@ class SmartALoader:
         self.fixed_assets: list[FixedAsset] = []
         self.journals: list[JournalLine] = []
         self.ledger: pd.DataFrame | None = None
-        self.account_statement: pd.DataFrame | None = None  # 계정별 잔액명세서
+        self.account_statement: pd.DataFrame | None = None  # 계정별 잔액명세서 (계정 총계)
+        self.account_details: pd.DataFrame | None = None    # 계정별 세부명세 (거래처별 라인)
         # 행 수준 파싱 경고 {파일유형: [경고메시지, ...]}
         self.parse_warnings: dict[str, list[str]] = {}
         # 파일별 표준화 진단 메타 {파일유형: {format, encoding, header_row, ...}}
@@ -535,13 +590,15 @@ class SmartALoader:
             "계정별원장":          ("ledger",           parse_ledger),
             # 잔액 구조가 재무상태표와 동일 (계정코드/계정명/잔액) — 동일 파서 재사용
             "계정별명세서":        ("account_statement", parse_balance_sheet),
+            # 결산부속명세서 — 계정별 거래처 세부 라인 (업무무관자산 드릴다운)
+            "결산부속명세서":      ("account_details",  parse_account_details),
         }
         # 빈 초기값 — 파싱 실패 시 이전(다른 회사) 데이터가 남지 않도록 반드시 초기화
         _empty: dict[str, object] = {
             "balance_sheet": None, "income_statement": None,
             "cost_statement": None, "retained_earnings": None,
             "fixed_assets": [], "journals": [], "ledger": None,
-            "account_statement": None,
+            "account_statement": None, "account_details": None,
         }
         errors: dict[str, str] = {}
         self.parse_warnings = {}
@@ -566,6 +623,18 @@ class SmartALoader:
         # 보고서형 재무제표(계정코드 없음)에 분개장의 계정명→코드 매핑 적용
         # — Smart A·WEHAGO 등 프로그램이 달라도 분개장 코드 체계로 통일
         self._backfill_codes_from_journals()
+
+        # 결산부속명세서만 업로드된 경우 — 계정 총계를 롤업해 잔액명세서(account_statement)
+        # 호환 DataFrame을 보충한다 (차입금·보증금 등 잔액 조회가 동일하게 동작하도록).
+        if (self.account_statement is None and self.account_details is not None
+                and not self.account_details.empty):
+            roll = (
+                self.account_details.groupby(["계정코드", "계정명"], as_index=False)["금액"]
+                .sum().rename(columns={"금액": "기말잔액"})
+            )
+            roll["기초잔액"] = 0
+            roll["합계행"] = False
+            self.account_statement = roll
         return errors
 
     def _backfill_codes_from_journals(self) -> None:

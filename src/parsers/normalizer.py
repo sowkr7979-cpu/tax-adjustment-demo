@@ -218,6 +218,35 @@ def _read_html_tables(path: Path) -> tuple[pd.DataFrame, str]:
     raise ValueError(f"HTML 표 추출 실패: {last_err}")
 
 
+def _read_xlsx_sanitized(path: Path, sheet: str | int) -> pd.DataFrame:
+    """깨진 .xlsx 복구 읽기 — styles.xml의 비표준 속성을 제거 후 openpyxl 재시도.
+
+    일부 회계 프로그램(더존·웨하고 계열) 내보내기는 OOXML 스펙에 어긋나게
+    `<xf>` 요소에 `count` 속성을 붙인다 (`count`는 부모 요소 속성). openpyxl의
+    CellStyle 파서가 이를 거부하므로(`unexpected keyword argument 'count'`),
+    메모리에서 styles.xml만 정정한 사본을 만들어 다시 읽는다.
+    """
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(path) as src:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
+            for item in src.infolist():
+                data = src.read(item.filename)
+                if item.filename == "xl/styles.xml":
+                    text = data.decode("utf-8", "replace")
+                    # <xf ...> 요소에 잘못 붙은 count 속성만 제거 (부모 cellStyleXfs/cellXfs의
+                    # count는 보존). 다른 비표준 속성은 건드리지 않는다.
+                    text = re.sub(r'(<xf\b[^>]*?)\s+count="\d+"', r"\1", text)
+                    data = text.encode("utf-8")
+                out.writestr(item, data)
+        buf.seek(0)
+        return pd.read_excel(
+            buf, sheet_name=sheet, header=0, dtype=str, engine="openpyxl"
+        ).fillna("")
+
+
 def _read_csv_any(path: Path) -> tuple[pd.DataFrame, str]:
     last_err: Exception | None = None
     for enc in _ENCODINGS:
@@ -288,6 +317,15 @@ def read_any_table(path: str | Path, sheet: str | int = 0) -> tuple[pd.DataFrame
                 break
             except Exception as e:
                 errs.append(f"{eng}: {e}")
+        if df is None and fmt == "xlsx":
+            # 진짜 ZIP/xlsx인데 엔진이 실패 — 깨진 styles.xml 정정 후 재시도
+            try:
+                df = _read_xlsx_sanitized(p, sheet)
+                meta["encoding"] = "openpyxl(sanitized)"
+                meta["notes"].append("비표준 styles.xml 정정 후 복구 읽기")
+                raw_header_offset = 1
+            except Exception as e:
+                errs.append(f"sanitized: {e}")
         if df is None:
             # 확장자만 xls인 비표준 파일 — HTML 재시도
             try:

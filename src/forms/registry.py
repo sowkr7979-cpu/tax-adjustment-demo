@@ -1,6 +1,6 @@
 """별지서식 레지스트리 — 서식 번호는 이 파일에만 정의."""
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 
 
@@ -95,20 +95,6 @@ FORM_REGISTRY: dict[str, FormEntry] = {
 }
 
 
-def get_form(key: str) -> FormEntry:
-    if key not in FORM_REGISTRY:
-        raise KeyError(f"서식 키 없음: {key}")
-    entry = FORM_REGISTRY[key]
-    if not entry.verified:
-        import warnings
-        warnings.warn(
-            f"{entry.byl_no}({entry.name})은 API 미확인 서식입니다. "
-            "구현 전 law_api.py로 확인 후 verified=True로 변경하세요.",
-            stacklevel=2,
-        )
-    return entry
-
-
 def recommend_forms(
     has_depreciation: bool,
     has_entertainment: bool,
@@ -121,6 +107,7 @@ def recommend_forms(
     has_vehicle: bool,
     has_tax_credit: bool,
     is_sme: bool,
+    has_loss_carryback: bool = False,
 ) -> list[FormEntry]:
     """계정 존재 여부에 따라 필요 서식 추천."""
     keys = ["TAX_BASE_REPORT", "BALANCE_SHEET", "INCOME_STATEMENT",
@@ -141,4 +128,6 @@ def recommend_forms(
         keys.append("VEHICLE_EXPENSE")
     if has_tax_credit:
         keys += ["TAX_CREDIT_SUM", "MIN_TAX"]
+    if has_loss_carryback:
+        keys.append("REFUND_REQUEST")
     return [FORM_REGISTRY[k] for k in keys if k in FORM_REGISTRY]

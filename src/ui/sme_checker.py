@@ -44,8 +44,8 @@ def ksic_to_industry(induty_code: str) -> str:
 def _dart_badge(year: str | None = None) -> str:
     label = f"DART {year}년 공시" if year else "DART 자동입력"
     return (
-        '<span style="font-size:11px;background:rgba(0,113,227,0.1);'
-        'color:#0071e3;border-radius:5px;padding:1px 6px;margin-left:6px;'
+        '<span style="font-size:11px;background:#e8f0fe;'
+        'color:#1a73e8;border-radius:5px;padding:1px 6px;margin-left:6px;'
         f'font-weight:600;">{label}</span>'
     )
 
@@ -69,7 +69,7 @@ def render_sme_checker(prefill: dict | None = None) -> dict:
     st.subheader("중소기업 판정 워크시트")
     if has_prefill:
         st.markdown(
-            '<p style="font-size:13px;color:#0071e3;margin-top:-0.5rem;">'
+            '<p style="font-size:13px;color:#1a73e8;margin-top:-0.5rem;">'
             '아래 항목은 DART 공시 데이터로 자동입력되었습니다. '
             '확인 후 필요 시 수정하세요.</p>',
             unsafe_allow_html=True,

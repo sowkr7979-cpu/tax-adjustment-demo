@@ -139,6 +139,17 @@ class ManualInput:
     land_transfer_income: int = 0              # 토지등 양도소득 (양도가액 − 장부가액 등)
     land_transfer_type: str = "비사업용토지"   # 비사업용토지 / 주택별장 / 조합원입주권분양권
     land_transfer_unregistered: bool = False   # 미등기 양도 여부 (비사업용토지·주택별장은 40%)
+    # 중소기업 결손금 소급공제 환급 (법§72, 영§110) — 당기 결손 시 직전 사업연도 법인세 환급
+    loss_carryback_enabled: bool = False       # 소급공제 검토·신청 여부 (회계사 선택)
+    loss_carryback_prior_tax_base: int = 0     # 직전 사업연도 과세표준
+    loss_carryback_prior_gross_tax: int = 0    # 직전 산출세액 (§55의2 토지등양도 제외)
+    loss_carryback_prior_credit: int = 0       # 직전 공제·감면세액 (가산세 제외 — 한도 산정)
+    loss_carryback_requested_loss: int = 0     # 신청 소급공제 결손금 (0이면 상한 전액)
+    loss_carryback_both_filed: bool = True     # 당기·직전 모두 기한내 신고 (법§72④ 요건)
+    loss_carryback_step2_override: int = 0      # 직전<2023 세율 미수록 시 회계사 2호 직접 입력 (0=미입력)
+    # 회계사 직접 입력 세무조정 (규칙엔진 미포착 항목 수동 가감) — 소득금액조정합계표에 직접 반영
+    #   [{name, amount, category: 익금산입|손금불산입|손금산입|익금불산입, disposition, basis}]
+    custom_adjustments: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -194,6 +205,17 @@ class TaxProject:
             cm.carryforward_losses = [dict(x) for x in pm.carryforward_losses]
             notes.append(f"이월결손금 {len(cm.carryforward_losses)}건 "
                          f"(당기 공제분 차감 여부 확인 필요)")
+        # 전년 결손금 소급공제(법§72)를 적용했다면, 소급공제분은 차기 이월결손금에서 제외해야 한다.
+        if pm.loss_carryback_enabled:
+            _applied = int(ta.get("loss_carryback_applied_loss", 0) or 0)
+            if _applied > 0:
+                notes.append(
+                    f"⚠ 전년 결손금 소급공제(법§72) 적용분 {_applied:,}원은 이월공제(법§13①1호) 대상에서 "
+                    "제외 — 당기 이월결손금에 이 금액이 포함되지 않았는지 확인하세요(이중공제 방지).")
+            else:
+                notes.append(
+                    "⚠ 전년 결손금 소급공제(법§72) 신청분은 이월공제 대상에서 제외 — "
+                    "당기 이월결손금에 소급공제한 결손금이 포함되지 않도록 확인하세요.")
 
         # ── 전기 유보 — 전년 계산 결과의 유보 발생분이 있으면 그것을, 없으면 입력값 ──
         prev_reserves = ta.get("reserves") or pm.prior_reserves

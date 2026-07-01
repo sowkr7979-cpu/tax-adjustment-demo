@@ -242,13 +242,30 @@ class TaxAdjustmentResult:
     welfare_disallowed_lines: list = field(default_factory=list)
     # 의제배당 건별 내역 (법§16①) — 사유별 익금산입.
     deemed_dividend_lines: list = field(default_factory=list)
+    # 회계사 직접 입력 세무조정 (규칙엔진 미포착 항목) — 소득금액조정합계표에 직접 가감
+    #   [{name, amount, category: 익금산입|손금불산입|손금산입|익금불산입, disposition, basis}]
+    custom_adjustment_lines: list = field(default_factory=list)
 
     rule_engine_version: str = "0.1.0"
     law_reference_date: date = field(default_factory=date.today)
 
+    # 가산/차감 구분 카테고리 (소득금액조정합계표)
+    _ADD_CATEGORIES = ("익금산입", "손금불산입")
+    _DEDUCT_CATEGORIES = ("손금산입", "익금불산입")
+
+    @property
+    def custom_add_back(self) -> int:
+        return sum(int(x.get("amount", 0)) for x in self.custom_adjustment_lines
+                   if x.get("category") in self._ADD_CATEGORIES)
+
+    @property
+    def custom_deduct(self) -> int:
+        return sum(int(x.get("amount", 0)) for x in self.custom_adjustment_lines
+                   if x.get("category") in self._DEDUCT_CATEGORIES)
+
     @property
     def total_add_back(self) -> int:
-        return (
+        return self.custom_add_back + (
             self.depreciation_excess + self.entertainment_excess
             + self.entertainment_no_receipt + self.donation_excess
             + self.pension_excess + self.bad_debt_excess
@@ -269,7 +286,7 @@ class TaxAdjustmentResult:
 
     @property
     def total_deduct(self) -> int:
-        return (
+        return self.custom_deduct + (
             self.depreciation_approved + self.dividend_exclusion
             + self.forex_gain_excluded + self.derivative_gain_excluded
             + self.securities_gain_excluded + self.pension_deduction

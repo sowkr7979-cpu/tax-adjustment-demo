@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import date
 
-from src.llm.ollama_client import OllamaClient
+from src.llm.anthropic_client import AnthropicClient
 from src.rules.legal_basis import fetch_articles_for_issues
 from src.utils.models import (
     IssueCode, JournalLine, LLMAnalysisResult, RuleClassificationResult,
@@ -71,7 +71,7 @@ def _build_journal_text(lines: list[JournalLine]) -> str:
 class JournalAnalyzer:
     def __init__(
         self,
-        client: OllamaClient,
+        client: AnthropicClient,
         fiscal_year_end: date,
         company_name: str,
         is_sme: bool,

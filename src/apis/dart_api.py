@@ -13,6 +13,9 @@ import requests
 
 
 DART_URL = "https://opendart.fss.or.kr/api"
+# DART(전자공시) 문서 뷰어·기업개황 바로가기 — Open API가 아닌 공시 화면 URL
+DART_DOC_VIEWER = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
+DART_CORP_POPUP = "https://dart.fss.or.kr/dsae001/selectPopup.do?selectKey={corp_code}"
 
 
 class DartApiError(Exception):
@@ -231,6 +234,75 @@ class DartApiClient:
             for item in data.get("list", [])
             if item.get("nm", "").strip()
         ]
+
+    # ── 감사보고서 바로가기 (최대주주현황 미제출 비상장 법인용) ────────────────
+
+    def find_audit_report(
+        self, corp_code: str, years_back: int = 6,
+    ) -> dict | None:
+        """list.json — 최신 감사보고서(또는 정기보고서) 1건을 찾아 문서 바로가기 정보 반환.
+
+        hyslrSttus(최대주주현황)가 없는 비상장 법인의 특수관계인은 감사보고서의
+        「주주현황」·「특수관계자 거래」 주석에서 확인해야 한다. Open API는 그 주석을
+        구조화 제공하지 않으므로, 사용자가 원문 문서로 바로 이동하도록 rcept_no를 찾는다.
+
+        우선순위: 외부감사관련(F, 감사보고서·연결감사보고서) → 정기공시(A, 사업보고서 등).
+        외부감사 비대상으로 공시가 전혀 없으면 None.
+
+        반환: {"rcept_no","report_nm","rcept_dt","url"} | None
+        실패(네트워크·키 오류 등)는 예외를 그대로 던진다 — '자료 없음'(None)과 구분.
+        """
+        today = date.today()
+        try:
+            bgn_dt = today.replace(year=today.year - years_back)
+        except ValueError:                       # 2/29 등
+            bgn_dt = today - timedelta(days=365 * years_back)
+        base = {
+            "crtfc_key": self.api_key,
+            "corp_code": corp_code,
+            "bgn_de": bgn_dt.strftime("%Y%m%d"),
+            "end_de": today.strftime("%Y%m%d"),
+            "page_count": "100",
+            "sort": "date",
+            "sort_mth": "desc",
+        }
+
+        def _rank(item: dict) -> int:
+            nm = item.get("report_nm", "")
+            if "감사보고서" in nm and "연결" not in nm:
+                return 0                          # 단독 감사보고서 우선
+            if "감사보고서" in nm:
+                return 1                          # 연결감사보고서
+            return 2                              # 그 외(사업보고서 등)
+
+        for pblntf_ty in ("F", "A"):              # F: 외부감사관련, A: 정기공시
+            params = dict(base, pblntf_ty=pblntf_ty)
+            resp = self.session.get(
+                f"{DART_URL}/list.json", params=params, timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            status = data.get("status", "")
+            if status == "013":                   # 해당 유형 공시 없음 — 다음 유형 시도
+                continue
+            if status != "000":
+                raise DartApiError(
+                    f"DART list 오류 status={status}: {data.get('message', '')}"
+                )
+            items = [it for it in data.get("list", []) if it.get("rcept_no", "").strip()]
+            if not items:
+                continue
+            # 이미 최신순 — 같은 접수일이면 단독 감사보고서를 우선
+            items.sort(key=lambda it: (it.get("rcept_dt", ""), -_rank(it)), reverse=True)
+            top = items[0]
+            rcept_no = top.get("rcept_no", "").strip()
+            return {
+                "rcept_no":  rcept_no,
+                "report_nm": top.get("report_nm", "").strip(),
+                "rcept_dt":  top.get("rcept_dt", "").strip(),
+                "url":       DART_DOC_VIEWER.format(rcept_no=rcept_no),
+            }
+        return None
 
     # ── 법인 기본정보 ─────────────────────────────────────────────────────────
 

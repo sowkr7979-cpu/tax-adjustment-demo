@@ -35,7 +35,7 @@ ADJUSTMENT_LEGAL_BASIS: dict[str, tuple[str, str, str]] = {
     "interest_nonreal_name":     ("법인세법 제28조제1항제2호 (비실명 채권·증권의 이자)", LAW_CORP_TAX,       "002800"),
     "vehicle_disallowed":        ("법인세법 제27조의2 (업무용승용차 관련비용)",        LAW_CORP_TAX,        "002702"),
     "vehicle_depr_excess":       ("법인세법 제27조의2제3항 (승용차 감가상각비 한도초과·이월)", LAW_CORP_TAX,    "002702"),
-    "officer_bonus_excess":      ("법인세법 제26조 (과다경비 등의 손금불산입)",        LAW_CORP_TAX,        "002600"),
+    "officer_bonus_excess":      ("법인세법 시행령 제43조제2항 (임원 상여금 한도초과·법§26 위임)", LAW_CORP_TAX_DECREE, "004300"),
     "officer_retirement_excess": ("법인세법 시행령 제44조 (퇴직급여의 손금불산입)",     LAW_CORP_TAX_DECREE, "004400"),
     "interest_construction":     ("법인세법 제28조 (지급이자의 손금불산입)",          LAW_CORP_TAX,        "002800"),
     "interest_non_business":     ("법인세법 제28조제1항제4호 (업무무관자산 지급이자)", LAW_CORP_TAX,        "002800"),
@@ -55,8 +55,13 @@ ADJUSTMENT_LEGAL_BASIS: dict[str, tuple[str, str, str]] = {
     "unfair_transaction":        ("법인세법 제52조 (부당행위계산의 부인)",            LAW_CORP_TAX,        "005200"),
     "deemed_dividend":           ("법인세법 제16조 (배당금 또는 분배금의 의제)",       LAW_CORP_TAX,        "001600"),
     "deemed_rental":             ("조세특례제한법 제138조 (임대보증금 등의 간주익금)",  LAW_SPECIAL_TAX,     "013800"),
+    # 전기 △유보 추인(익금산입) — 추인 근거는 유보 발생 시 부인 조문에 따름(항목별 상이).
+    #   대표 조문으로 법§34③(대손충당금 환입)을 둠 — 표시명에 '항목별 확인'을 명시해 대손충당금 오인 방지.
+    "prior_reserve_reversal_add": ("전기 △유보의 당기 추인 (근거는 유보 발생 시 부인 조문 — 항목별 확인 필요; 예: 대손충당금 법§34③·감가상각 법§23)", LAW_CORP_TAX, "003400"),
     # ── 차감조정 (손금산입·익금불산입) ──
     "depreciation_approved":     ("법인세법 제23조 (전기 부인액 추인)",               LAW_CORP_TAX,        "002300"),
+    # 전기 유보 추인(손금산입) — 추인 근거는 유보 발생 시 부인 조문에 따름(항목별 상이).
+    "prior_reserve_reversal_deduct": ("전기 유보의 당기 추인 (근거는 유보 발생 시 부인 조문 — 항목별 확인 필요; 예: 대손충당금 법§34③·감가상각 법§23)", LAW_CORP_TAX, "003400"),
     "donation_carryforward_deduction": ("법인세법 제24조제5항·제6항 (이월 기부금 우선공제)", LAW_CORP_TAX,    "002400"),
     "dividend_exclusion":        ("법인세법 제18조의2 (수입배당금액의 익금불산입)",    LAW_CORP_TAX,        "001802"),
     "debt_relief_offset":        ("법인세법 제18조제6호 (자산수증익·채무면제익 중 이월결손금 보전 충당액 익금불산입)", LAW_CORP_TAX, "001800"),
@@ -67,6 +72,8 @@ ADJUSTMENT_LEGAL_BASIS: dict[str, tuple[str, str, str]] = {
     "land_transfer_tax":         ("법인세법 제55조의2 (토지등 양도소득에 대한 법인세)", LAW_CORP_TAX, "005502"),
     "surtax":                    ("국세기본법 제47조의2~4 (무신고·과소신고·납부지연 가산세)", LAW_NATIONAL_TAX_BASIC, "004702"),
     "pension_deduction":         ("법인세법 시행령 제44조의2 (퇴직연금 부담금 손금산입)", LAW_CORP_TAX_DECREE, "004402"),
+    # ── 결손금 소급공제 환급 (세액 산정 후 별건 — 별지68호) ──
+    "loss_carryback_refund":     ("법인세법 제72조 (중소기업의 결손금 소급공제에 따른 환급 — 영§110)", LAW_CORP_TAX, "007200"),
 }
 
 

@@ -70,6 +70,41 @@ def filter_vehicle_lines(
     return kept, foreign
 
 
+def allocate_other_expense(
+    assets: list[FixedAsset],
+    lines: list[JournalLine],
+    total: int,
+) -> dict[str, int]:
+    """업무용승용차 관련비용(기타비용)을 차량별 금액으로 귀속.
+
+    · 차량번호가 등록 차량과 일치하는 분개 → 그 차량에 정확히 귀속(매칭분).
+    · 차량번호 식별불가(공통·개인차량·미기재)·등록외 차량분 → 감가상각비율로 안분.
+    반환 합계 = total (agg.vehicle_expense) 보존 — 세무조정 금액 불변, 차량별 정확도만 개선.
+
+    total: 관련비용 총액(계정 기준 집계값). 매칭분 외 나머지를 안분 대상으로 본다.
+    """
+    if not assets:        # 안분 대상 차량 없음 — 호출부(calc.py)가 가드하나 순수함수 방어
+        return {}
+    per = attribute_by_vehicle(assets, lines)
+    matched = {a.asset_code: sum(int(l.debit or 0) for l in per.get(a.asset_code, []))
+               for a in assets}
+    common = max(0, int(total) - sum(matched.values()))   # 미식별+등록외 → 안분
+    depr_sum = sum(int(a.company_depr or 0) for a in assets)
+    n = len(assets)
+    out: dict[str, int] = {}
+    allocated = 0
+    # 마지막 차량이 잔여(int 절사분)를 흡수 → Σ안분 = common 정확히 보존(총액 = total 불변).
+    for idx, a in enumerate(assets):
+        if idx < n - 1:
+            ratio = (a.company_depr / depr_sum) if depr_sum > 0 else (1.0 / n)
+            share = int(common * ratio)
+        else:
+            share = common - allocated
+        allocated += share
+        out[a.asset_code] = matched[a.asset_code] + share
+    return out
+
+
 def attribute_by_vehicle(
     assets: list[FixedAsset],
     lines: list[JournalLine],

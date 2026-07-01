@@ -34,7 +34,7 @@ SPECIAL_TAX_CREDITS: dict[str, CreditSpec] = {
     ),
     "연구인력개발비세액공제": CreditSpec(
         "연구·인력개발비 세액공제", "조특§10", subject_to_min_tax=False, farm_surtax_taxable=False,
-        note="중소기업분은 최저한세 적용배제(조특§132①2호 단서)·농특세 비과세. "
+        note="중소기업분은 최저한세 적용배제(조특§132①3호 괄호 '중소기업이 아닌 자만 해당')·농특세 비과세. "
              "일반기업 당기분은 최저한세 적용 — 규모 확인 후 조정.",
     ),
     "고용증대세액공제": CreditSpec(
@@ -99,17 +99,18 @@ def calc_integrated_investment_credit(
     investment: int,            # 당기 투자액 (대상 자산)
     base_rate: float,           # 기본공제율 (조특§24① — 중소 10%·중견 5%·대기업 1% 등, 현행값)
     prior_3yr_avg: int = 0,     # 직전 3년 평균 투자액
-    extra_rate: float = 0.0,    # 추가공제율 (직전 3년 평균 초과분, 조특§24①2호)
+    extra_rate: float = 0.0,    # 추가공제율 (직전 3년 평균 초과분, 조특§24①2호나목)
 ) -> int:
     """통합투자세액공제 (조특§24) — 기본공제 + 추가공제(직전 3년 평균 초과분).
 
     기본공제 = 당기 투자액 × 기본공제율.
-    추가공제 = max(0, 당기 투자액 − 직전 3년 평균) × 추가공제율.
+    추가공제 = max(0, 당기 투자액 − 직전 3년 평균) × 추가공제율,
+              단 **기본공제액의 2배를 한도**로 한다 (조특§24①2호나목, law.go.kr 확인).
     공제율은 자산·규모·연도별 별표값이므로 현행값을 파라미터로 받는다.
     """
     base = int(max(0, investment) * max(0.0, base_rate))
     extra = 0
     if extra_rate > 0:
         excess = max(0, investment - max(0, prior_3yr_avg))
-        extra = int(excess * extra_rate)
+        extra = min(int(excess * extra_rate), base * 2)   # 추가공제 ≤ 기본공제 × 2
     return base + extra

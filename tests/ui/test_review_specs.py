@@ -80,10 +80,25 @@ def test_inventory_proviso_uses_max_of_fifo_and_filed():
 # ── 의제배당 (법§16① 사유별·상법§459 게이트) ────────────────────────────────
 
 def test_deemed_dividend_general_cause_subtracts_cost():
-    """감자·해산·합병·분할: 교부재산 − 취득가액."""
+    """감자·해산·합병·분할: 교부재산 − 취득가액. 현금·재산 수령 → 기타(처분 不요)."""
     spec = deemed_dividend_spec()
     a = {"cause": "합병(5호)", "received": 100_000_000, "cost": 60_000_000}
-    assert build_result(spec, a).amount == 40_000_000
+    r = build_result(spec, a)
+    assert r.amount == 40_000_000
+    assert r.disposition == "기타"   # 감자·합병 등은 현금·재산 수령 → 기타
+
+
+def test_deemed_dividend_bonus_issue_disposition_is_yubo():
+    """무상증자(2호)·자기주식 재배정(3호): 교부주식 세무상 취득가액 증가 → 유보(차기 추인).
+
+    엔진이 실제로 disposition='유보'를 생성하는지 검증 — summary_rows 표시·을표 연계의 근거.
+    """
+    spec = deemed_dividend_spec()
+    a = {"cause": "잉여금 자본전입=무상증자(2호)", "excluded_reserve": "아니오(이익잉여금 등)",
+         "received": 30_000_000}
+    assert build_result(spec, a).disposition == "유보"
+    a3 = {"cause": "자기주식 보유분 자본전입 재배정(3호)", "received": 5_000_000}
+    assert build_result(spec, a3).disposition == "유보"
 
 
 def test_deemed_dividend_bonus_issue_no_cost_subtraction():
@@ -104,6 +119,17 @@ def test_deemed_dividend_capital_reserve_excluded():
     a = {"cause": "잉여금 자본전입=무상증자(2호)", "excluded_reserve": "예(의제배당 제외)",
          "received": 30_000_000}
     assert build_result(spec, a) is None
+
+
+def test_deemed_dividend_3ho_self_share_no_cost():
+    """3호(자기주식 보유분 자본전입 재배정) — 무차감(received 전액), 자본준비금 제외 게이트 적용."""
+    spec = deemed_dividend_spec()
+    a = {"cause": "자기주식 보유분 자본전입 재배정(3호)", "received": 5_000_000, "cost": 9_999}
+    r = build_result(spec, a)
+    assert r is not None and r.amount == 5_000_000   # 취득가액 차감 없음
+    # 자본준비금 자본전입이면 제외(게이트 차단)
+    a2 = dict(a, excluded_reserve="예(의제배당 제외)")
+    assert build_result(spec, a2) is None
 
 
 # ── 복리후생비 (영§45① 열거 게이트 → 귀속자 처분) ────────────────────────────

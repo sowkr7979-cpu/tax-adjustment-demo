@@ -129,9 +129,13 @@ def welfare_spec() -> ReviewItemSpec:
 # (취득가액 차감 없음). 2호 단서: 상법§459① 자본준비금·자산재평가적립금 자본전입은 제외(게이트).
 _DD_CAUSES = (
     "감자·소각·퇴사(1호)", "잉여금 자본전입=무상증자(2호)",
+    "자기주식 보유분 자본전입 재배정(3호)",
     "해산·잔여재산분배(4호)", "합병(5호)", "분할(6호)",
 )
+# 취득가액 차감 대상 (교부−취득). 자본전입형(2·3호)은 무차감(교부주식가액 전부).
 _DD_COST_CAUSES = ("감자·소각·퇴사(1호)", "해산·잔여재산분배(4호)", "합병(5호)", "분할(6호)")
+# 무차감 + 자본준비금·재평가적립금 자본전입 제외 단서(법§16①2호 단서) 적용 대상
+_DD_NOCOST_CAUSES = ("잉여금 자본전입=무상증자(2호)", "자기주식 보유분 자본전입 재배정(3호)")
 
 
 def deemed_dividend_spec():
@@ -146,26 +150,35 @@ def deemed_dividend_spec():
                 "excluded_reserve",
                 "자본전입 재원이 상법§459① 자본준비금 또는 자산재평가적립금인가?", "select",
                 options=("예(의제배당 제외)", "아니오(이익잉여금 등)"),
-                show_when=(("cause", "잉여금 자본전입=무상증자(2호)"),),
+                show_when=(("cause", _DD_NOCOST_CAUSES),),
                 help="법§16①2호 단서 — 자본준비금·재평가적립금 자본전입은 의제배당 아님. "
-                     "단 자산재평가법§13①1호 토지 재평가차액은 제외의 예외(=의제배당 대상).",
+                     "단 자산재평가법§13①1호 토지 재평가차액은 제외의 예외(=의제배당 대상). "
+                     "3호(자기주식 보유분 재배정)도 자본전입형이므로 동일 단서 적용.",
             ),
-            Question("received", "교부 재산·주식 가액 (원)", "amount",
+            Question("received", "교부 재산·주식 가액 (3호는 지분증가 상당 가액, 원)", "amount",
                      show_when=(("cause", _DD_CAUSES),)),
             Question("cost", "주식 취득가액 (원)", "amount",
                      show_when=(("cause", _DD_COST_CAUSES),),
-                     help="감자·해산·합병·분할만 차감. 무상증자(2호)는 취득가액 차감 없음."),
+                     help="감자·해산·합병·분할만 차감. 자본전입형(2·3호)은 취득가액 차감 없음."),
         ],
         amount_fn=lambda a: (
             int(a.get("received", 0) or 0)
-            if a.get("cause") == "잉여금 자본전입=무상증자(2호)"
+            if a.get("cause") in _DD_NOCOST_CAUSES
             else max(0, int(a.get("received", 0) or 0) - int(a.get("cost", 0) or 0))
         ),
         gate_fn=lambda a: not (
-            a.get("cause") == "잉여금 자본전입=무상증자(2호)"
+            a.get("cause") in _DD_NOCOST_CAUSES
             and a.get("excluded_reserve") == "예(의제배당 제외)"
         ),
-        disposition=None,  # 익금산입(자기 익금) — 소득처분 不요
+        # 무상증자·자본전입형(2·3호)은 교부주식의 세무상 취득가액 증가 → 유보
+        #   (차기 주식 양도 시 추인). 감자·해산·합병·분할(1·4·5·6호)은 현금·재산 수령
+        #   (이미 자산 인식) → 기타(처분 不요). 사유별로 처분을 결정한다(KICPA 리뷰 반영).
+        disposition=DispositionRule(
+            by_question="cause",
+            mapping={**{c: "유보" for c in _DD_NOCOST_CAUSES},
+                     **{c: "기타" for c in _DD_COST_CAUSES}},
+            default="기타",
+        ),
         target_label="의제배당",
         add_or_deduct="add",
         reserve_field=None,

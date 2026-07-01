@@ -22,7 +22,7 @@ def render(proj) -> None:
 
     if st.session_state.tax_result is None:
         st.markdown(info_card(
-            "<b style='color:#ff9500;'>안내</b> &nbsp; "
+            "<b style='color:#ea8600;'>안내</b> &nbsp; "
             "먼저 5단계 <b>계산·검토</b>를 실행하세요."
         ), unsafe_allow_html=True)
         st.stop()
@@ -69,6 +69,21 @@ def render(proj) -> None:
                 # 고객 메모: 5단계에서 수정한 텍스트가 있으면 그것을, 없으면 템플릿 생성
                 _memo = (st.session_state.get("client_memo_text")
                          or build_client_memo(_calc_details, proj.company.name, fy_end_val.year))
+                # 별지68호 소급공제법인세액환급신청서 (검토 활성화 + 당기 결손 + 직전연도 값 입력 시)
+                # 직전 산출세액 미입력 상태에서 '미충족 신청서'가 서명용 패키지에 끼어드는 것을 방지.
+                _refund_form = None
+                _mi = proj.manual_input
+                _cur_loss_pdf = max(0, -int(getattr(r, "business_income", 0)))
+                if (_mi.loss_carryback_enabled and _cur_loss_pdf > 0
+                        and int(_mi.loss_carryback_prior_gross_tax or 0) > 0):
+                    from src.rules.loss_carryback import compute_loss_carryback_from_manual
+                    from src.forms.refund_request import build_refund_request
+                    _lcb_pdf = compute_loss_carryback_from_manual(
+                        _mi, is_sme=proj.company.is_sme, fy_start=fy_start,
+                        current_loss=_cur_loss_pdf)
+                    _refund_form = build_refund_request(
+                        company=proj.company, fy_start=fy_start, fy_end=fy_end_val, lcb=_lcb_pdf,
+                    )
                 try:
                     _pdf_bytes = build_review_pdf(
                         company_name=proj.company.name,
@@ -105,6 +120,7 @@ def render(proj) -> None:
                             ),
                         ),
                         donation_status=(proj.tax_adjustments or {}).get("donation_status"),
+                        refund_request=_refund_form,
                     )
                 except FileNotFoundError as e:
                     st.error(f"PDF 생성 실패 — 한글 폰트를 찾지 못했습니다: {e}")
@@ -185,6 +201,7 @@ def render(proj) -> None:
         has_vehicle=False,
         has_tax_credit=False,
         is_sme=proj.company.is_sme,
+        has_loss_carryback=bool(proj.manual_input.loss_carryback_enabled),
     )
     if forms:
         import pandas as pd
@@ -199,4 +216,56 @@ def render(proj) -> None:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.caption("해당 서식 없음")
+
+    # ── 중소기업 결손금 소급공제 환급 검토 (별지 제68호서식) — 전용 섹션 ──────────
+    st.divider()
+    st.markdown(section_title(
+        "중소기업 결손금 소급공제 환급 검토 (별지 제68호서식)",
+        "당기 결손 + 중소기업인 경우 직전 사업연도 법인세 환급(법§72)을 별도 검토하고 "
+        "「소급공제법인세액환급신청서」 형식으로 표시합니다.",
+    ), unsafe_allow_html=True)
+
+    mi = proj.manual_input
+    _cur_loss = max(0, -int(getattr(r, "business_income", 0)))
+    if not mi.loss_carryback_enabled:
+        st.caption(
+            "3단계 수기입력에서 **‘결손금 소급공제 환급을 검토한다’**를 체크하고 직전 사업연도 값을 "
+            "입력하면 여기에 별지 제68호 환급신청서가 생성됩니다."
+        )
+    elif _cur_loss <= 0:
+        st.caption("당기 결손금이 없어 소급공제 대상이 아닙니다 (각사업연도소득 ≥ 0).")
+    else:
+        col_rf, _ = st.columns([1, 4])
+        with col_rf:
+            _gen = st.button("소급공제법인세액환급신청서 생성", use_container_width=True)
+        if _gen:
+            from src.rules.loss_carryback import compute_loss_carryback_from_manual
+            from src.forms.refund_request import build_refund_request
+            fy_start = _parse_stored_date(proj.company.fiscal_year_start, date.today())
+            fy_end_val = _parse_stored_date(proj.company.fiscal_year_end, date.today())
+            _lcb = compute_loss_carryback_from_manual(
+                mi, is_sme=proj.company.is_sme, fy_start=fy_start, current_loss=_cur_loss)
+            form = build_refund_request(
+                company=proj.company, fy_start=fy_start, fy_end=fy_end_val, lcb=_lcb,
+            )
+            import pandas as pd
+            st.markdown(f"#### {form['byl']} &nbsp; {form['title']}")
+            if form["eligible"]:
+                st.metric("⑮ 환급신청 세액", f"{form['refund']:,.0f}원")
+            else:
+                st.warning("현재 입력으로는 환급 요건 미충족 — 아래 사유를 확인하세요.")
+            if form["needs_manual_step2"]:
+                st.warning(
+                    "직전 사업연도 세율테이블이 엔진에 미수록 — 3단계에서 ⑭(소급공제 후 산출세액)을 "
+                    "직접 입력해야 정확합니다(입력 전 환급액 0 보수처리).")
+            st.markdown("**① 신청인**")
+            st.dataframe(pd.DataFrame(form["applicant"]), use_container_width=True, hide_index=True)
+            st.markdown("**② 환급신청 내용 (법§72①·영§110①)**")
+            st.dataframe(pd.DataFrame(form["refund_rows"]), use_container_width=True, hide_index=True)
+            for _n in form["notes"]:
+                st.caption("• " + _n)
+            st.caption(
+                "※ 란 번호(⑦~⑮)는 법§72①·영§110① 환급세액 **계산구조 기준 배치**입니다 — "
+                "실제 신고 전 국세청 별지 제68호 서식 원본의 란 번호와 대조하세요."
+            )
 

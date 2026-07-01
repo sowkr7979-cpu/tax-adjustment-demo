@@ -120,6 +120,18 @@ def test_yoy_table_and_flags():
     assert not any("복리후생비" in f for f in flags)
 
 
+def test_yoy_preserves_income_statement_order():
+    """증감 금액 크기순이 아니라 손익계산서(입력) 순서를 그대로 유지한다."""
+    df = pd.DataFrame({
+        "계정명": ["매출액", "소모품비", "기업업무추진비"],
+        "당기금액": [1_000_000_000, 3_000_000, 80_000_000],
+        "전기금액": [900_000_000, 2_900_000, 40_000_000],
+    })
+    t = yoy_table(df)
+    # 증감액으로 정렬했다면 [매출액, 기업업무추진비, 소모품비]가 됐을 것 — 입력 순서 유지 확인
+    assert list(t["계정명"]) == ["매출액", "소모품비", "기업업무추진비"]
+
+
 def test_yoy_table_none_when_no_prev():
     df = pd.DataFrame({"계정명": ["매출액"], "당기금액": [100], "전기금액": [0]})
     assert yoy_table(df) is None

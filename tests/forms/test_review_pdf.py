@@ -103,3 +103,35 @@ def test_build_review_pdf_with_book_tax_details():
     )
     assert isinstance(out, bytes) and len(out) > 1000
     assert out[:4] == b"%PDF"
+
+
+def test_build_review_pdf_with_refund_request():
+    """별지68호 소급공제법인세액환급신청서 + 계산근거가 PDF에 포함된다 (스모크)."""
+    from src.project.taxproj import CompanyInfo
+    from src.rules.loss_carryback import compute_loss_carryback
+    from src.forms.refund_request import build_refund_request
+
+    r = TaxAdjustmentResult(
+        fiscal_year_start=date(2025, 1, 1),
+        fiscal_year_end=date(2025, 12, 31), is_sme=True,
+    )
+    r.business_income = -100_000_000
+    lcb = compute_loss_carryback(
+        is_sme=True, current_loss=100_000_000,
+        prior_tax_base=300_000_000, prior_gross_tax=37_000_000,
+        prior_credit_exemption=0, prior_fiscal_start=date(2024, 1, 1),
+    )
+    form = build_refund_request(
+        company=CompanyInfo(name="(주)테스트", business_no="123-45-67890"),
+        fy_start=date(2025, 1, 1), fy_end=date(2025, 12, 31), lcb=lcb,
+    )
+    assert form["calc_basis"]  # 계산근거 존재
+    out = build_review_pdf(
+        company_name="(주)테스트", business_no="123-45-67890",
+        fy_start=date(2025, 1, 1), fy_end=date(2025, 12, 31),
+        result=r, calc_details={},
+        coverage=[], requests=[], yoy_df=None, yoy_warn=[],
+        review_memos={}, client_memo="", risk_fn=lambda *a: "Low",
+        refund_request=form,
+    )
+    assert isinstance(out, bytes) and out[:4] == b"%PDF"

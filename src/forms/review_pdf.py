@@ -14,12 +14,14 @@ from pathlib import Path
 
 from fpdf import FPDF
 
+from src.forms.fonts import korean_fonts
 from src.forms.summary_rows import adjustment_rows, adj_type
 from src.forms.reserve_status import build_reserve_status, reserve_totals
 from src.forms.donation_status import build_donation_status
 
-_FONT_REG = Path(r"C:\Windows\Fonts\malgun.ttf")
-_FONT_BOLD = Path(r"C:\Windows\Fonts\malgunbd.ttf")
+_FONT_REG_STR, _FONT_BOLD_STR = korean_fonts()
+_FONT_REG = Path(_FONT_REG_STR)
+_FONT_BOLD = Path(_FONT_BOLD_STR)
 
 _GRAY = (236, 236, 241)
 _HEAD = (29, 29, 31)
@@ -195,6 +197,7 @@ def build_review_pdf(
     disposition_choices: dict | None = None,
     consulting_topics: list | None = None,
     donation_status: dict | None = None,
+    refund_request: dict | None = None,
 ) -> bytes:
     fy_label = f"{fy_start} ~ {fy_end}"
     pdf = _ReviewPDF(company_name or "(회사명 미입력)", fy_label)
@@ -315,6 +318,64 @@ def build_review_pdf(
                 + _dstat["balance_note"],
                 new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(*_HEAD)
+
+    # ── ②-4 소급공제법인세액환급신청서 (별지 제68호서식) + 계산근거 ─────────────
+    if refund_request:
+        _rr = refund_request
+        pdf.add_page()
+        _h2(pdf, f"2-4. {_rr.get('title', '소급공제법인세액환급신청서')} ({_rr.get('byl', '별지 제68호서식')})")
+        if not _rr.get("eligible"):
+            _body_font(pdf, 8)
+            pdf.set_text_color(200, 80, 0)
+            pdf.multi_cell(0, 4.6, "  ※ 현재 입력으로는 환급 요건 미충족 — 아래 사유 확인.",
+                           new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_HEAD)
+        if _rr.get("needs_manual_step2"):
+            _body_font(pdf, 8)
+            pdf.set_text_color(200, 80, 0)
+            pdf.multi_cell(0, 4.6,
+                           "  ※ 직전 사업연도 세율테이블 미수록 — ⑭를 회계사가 직접 입력해야 정확 "
+                           "(입력 전 환급액 0 보수처리).", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_HEAD)
+        # ① 신청인
+        _body_font(pdf, 8, bold=True)
+        pdf.multi_cell(0, 4.8, "  ① 신청인", new_x="LMARGIN", new_y="NEXT")
+        _simple_table(
+            pdf, ["항목", "내용"],
+            [[a["항목"], a["내용"]] for a in _rr.get("applicant", [])],
+            widths=[44, 96], size=8.0,
+        )
+        # ② 환급신청 내용 (⑦~⑮)
+        _body_font(pdf, 8, bold=True)
+        pdf.multi_cell(0, 4.8, "  ② 환급신청 내용 (법§72①·영§110①)", new_x="LMARGIN", new_y="NEXT")
+        _simple_table(
+            pdf, ["란", "금액(원)"],
+            [[x["란"], x["금액"]] for x in _rr.get("refund_rows", [])],
+            widths=[104, 36], size=8.0,
+        )
+        # 계산근거 (산식·근거조문 — 실제 값 대입)
+        if _rr.get("calc_basis"):
+            _body_font(pdf, 8, bold=True)
+            pdf.multi_cell(0, 4.8, "  계산근거 (산식·근거조문)", new_x="LMARGIN", new_y="NEXT")
+            _body_font(pdf, 7.5)
+            pdf.set_text_color(110, 110, 115)
+            for _cb in _rr["calc_basis"]:
+                pdf.multi_cell(0, 4.2, f"     - {_cb}", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_HEAD)
+        # 검토 주의 (추징·근거)
+        if _rr.get("notes"):
+            _body_font(pdf, 7.5)
+            pdf.set_text_color(134, 134, 139)
+            for _n in _rr["notes"]:
+                pdf.multi_cell(0, 4.0, f"  ※ {_n}", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_HEAD)
+        _body_font(pdf, 7.0)
+        pdf.set_text_color(134, 134, 139)
+        pdf.multi_cell(0, 4.0,
+                       "  ※ 란 번호(⑦~⑮)는 법§72①·영§110① 계산구조 기준 배치 — "
+                       "실제 신고 전 별지 제68호 서식 원본 란 번호와 대조하세요.",
+                       new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*_HEAD)
 
     # ── ③ 세목별 세무조정 (Book / Tax / 세무조정·소득처분 + 근거분개) ────────────
     pdf.add_page()
@@ -486,7 +547,7 @@ def build_review_pdf(
             pdf.set_text_color(200, 80, 0)
             pdf.multi_cell(0, 4.8, w, new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*_HEAD)
-        top = yoy_df.head(25)
+        top = yoy_df.head(40)
         _simple_table(
             pdf, ["계정명", "당기", "전기", "증감", "증감률(%)"],
             [[r["계정명"], f"{r['당기']:,}", f"{r['전기']:,}", f"{r['증감']:,}",
@@ -494,11 +555,13 @@ def build_review_pdf(
              for _, r in top.iterrows()],
             widths=[30, 18, 18, 18, 12], size=7.5,
         )
-        if len(yoy_df) > 25:
-            _body_font(pdf, 7.5)
-            pdf.set_text_color(134, 134, 139)
-            pdf.cell(0, 5, f"※ 증감액 상위 25개만 표시 (전체 {len(yoy_df)}개는 앱 CSV 참조)",
-                     new_x="LMARGIN", new_y="NEXT")
+        _body_font(pdf, 7.5)
+        pdf.set_text_color(134, 134, 139)
+        pdf.cell(0, 5,
+                 "※ 손익계산서 양식 순서대로 표시"
+                 + (f" — 상위 40개 계정만 표시 (전체 {len(yoy_df)}개는 앱 CSV 참조)"
+                    if len(yoy_df) > 40 else ""),
+                 new_x="LMARGIN", new_y="NEXT")
 
     # ── ⑦ 세무 컨설팅 코멘트 (규칙엔진 발굴 — 회계사 채택 후 확정) ──────────────
     if consulting_topics:

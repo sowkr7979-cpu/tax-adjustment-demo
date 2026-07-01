@@ -1,18 +1,6 @@
 """익금산입 항목 계산 — 인정이자(법령§89), 간주임대료(법법§56) 등."""
 from dataclasses import dataclass
 
-from src.utils.constants import get_prime_rate
-
-
-@dataclass
-class DeemedInterestResult:
-    loan_balance: int
-    prime_rate: float
-    months: int
-    deemed_interest: int
-    actual_interest: int
-    inclusion_amount: int   # 익금산입액
-
 
 @dataclass
 class PartyInterest:
@@ -52,6 +40,8 @@ def calc_deemed_interest_by_party(
     for name, jeoksu, actual in parties:
         deemed = int(jeoksu * rate / days) if days else 0
         diff = deemed - actual
+        # 영§88③ 게이트: 금전대여의 시가 = 인정이자(deemed). 차액이 3억 이상이거나
+        # '시가(=deemed)의 5% 이상'이면 적용 (부당행위 트랙의 '시가' = market과 동일 의미).
         applied = diff > 0 and (diff >= 300_000_000 or diff >= deemed * 0.05)
         inclusion = diff if applied else 0
         total += inclusion
@@ -120,33 +110,6 @@ class DeemedRentalResult:
     applicable: bool            # 적용 대상 여부 (주업 + 차입금 과다)
     reason: str                 # 미적용 사유 / 적용 근거
     inclusion_amount: int
-
-
-def calc_deemed_interest(
-    *,
-    loan_balance: int,
-    actual_interest: int,
-    fiscal_year: int,
-    months: int = 12,
-    override_rate: float = 0.0,
-) -> DeemedInterestResult:
-    """특수관계인 가지급금 인정이자 익금산입 (법§52, 영§88①6호, 영§89③).
-
-    영§89③: 시가 = 가중평균차입이자율 원칙. 적용 불가·5년 초과 대여·신고 선택 시
-    당좌대출이자율. override_rate > 0이면 가중평균차입이자율로 사용,
-    0이면 당좌대출이자율(국세청 고시)을 적용한다.
-    """
-    rate = override_rate if override_rate > 0 else get_prime_rate(fiscal_year)
-    deemed = int(loan_balance * rate * months / 12)
-    inclusion = max(0, deemed - actual_interest)
-    return DeemedInterestResult(
-        loan_balance=loan_balance,
-        prime_rate=rate,
-        months=months,
-        deemed_interest=deemed,
-        actual_interest=actual_interest,
-        inclusion_amount=inclusion,
-    )
 
 
 def calc_deemed_rental(

@@ -40,6 +40,7 @@ from src.utils.constants import (
 from src.utils.safe_export import safe_df
 from src.utils.models import TaxAdjustmentResult, TaxCredit
 from src.ui.manual_input import _bs_amount, _bs_amount_detail
+from src.ui.review_questions import build_results
 from src.ui.styles import page_header, section_title, striped_by_group
 from src.views.common import _parse_stored_date
 
@@ -604,6 +605,8 @@ def render(proj) -> None:
                             disposition="△유보")
 
                 # 재고자산 평가 조정 및 기타 손금불산입 (수기 입력)
+                _manual_src = "근거 자료: 3단계 수기 입력의 분개 체크 내역"
+                _manual_why = "3단계 수기 입력에서 해당 분개를 직접 체크·분류함 (자동 추출 아님 — 사용자 판단 반영)"
                 # 재고자산 평가 — 건별 질문형(종류별, 영§74④ 단서). 없으면 레거시 총액.
                 from src.ui.review_specs import inventory_spec as _inv_spec
                 _inv_results = build_results(
@@ -611,10 +614,21 @@ def render(proj) -> None:
                 result.inventory_adjustment = (
                     sum(r.amount for r in _inv_results) if _inv_results
                     else mi.inventory_valuation_adjustment)
+                _inv_basis_lines = (
+                    [f"건별 평가조정 합계 {result.inventory_adjustment:,}원 — {len(_inv_results)}건",
+                     "3단계 재고자산 평가조정 건별 질문 입력 기준"]
+                    if _inv_results else
+                    ["신고 평가방법과 장부 적용방법 불일치 → 세법상 재계산 차액 (무신고 시 선입선출법)", _manual_src]
+                )
+                _inv_reason = (
+                    "3단계에서 재고 종류별 신고상태·장부가액·선입선출/신고방법 평가액 입력 → "
+                    "영§74④ 기준으로 조정금액 산정"
+                    if _inv_results else
+                    "3단계 재고자산 평가방법 입력에서 ①신고방법과 ②장부방법이 불일치 (또는 무신고)"
+                )
                 # 복리후생비(열거 외) — 건별 질문형(영§45 열거게이트·건별 처분). 없으면 레거시 총액.
                 from src.ui.review_specs import welfare_spec
-                from src.ui.review_questions import build_results as _build_results
-                _welfare_results = _build_results(
+                _welfare_results = build_results(
                     welfare_spec(), (mi.review_answers or {}).get("복리후생비 (열거 외)", []))
                 if _welfare_results:
                     result.welfare_disallowed = sum(r.amount for r in _welfare_results)
@@ -627,11 +641,31 @@ def render(proj) -> None:
                 result.joint_expense_excess = mi.joint_expense_excess
                 result.non_business_expense = mi.non_business_expense
                 result.punitive_damages = mi.punitive_damages
-                _manual_src = "근거 자료: 3단계 수기 입력의 분개 체크 내역"
-                _manual_why = "3단계 수기 입력에서 해당 분개를 직접 체크·분류함 (자동 추출 아님 — 사용자 판단 반영)"
-                _add_detail("재고자산 평가 조정", mi.inventory_valuation_adjustment, "영§74",
-                            ["신고 평가방법과 장부 적용방법 불일치 → 세법상 재계산 차액 (무신고 시 선입선출법)", _manual_src],
-                            reason="3단계 재고자산 평가방법 입력에서 ①신고방법과 ②장부방법이 불일치 (또는 무신고)",
+
+                # ── 회계사 직접 입력 세무조정 (규칙엔진 미포착 항목 수동 가감) ──
+                _ADD_CATS = ("익금산입", "손금불산입")
+                _custom_lines = []
+                for _ca in (mi.custom_adjustments or []):
+                    _amt = int(_ca.get("amount", 0) or 0)
+                    _nm = str(_ca.get("name", "")).strip()
+                    _cat = str(_ca.get("category", "")).strip()
+                    if not _amt or not _nm or _cat not in ("익금산입", "손금불산입", "손금산입", "익금불산입"):
+                        continue
+                    _disp = str(_ca.get("disposition", "")).strip() or "검토필요"
+                    _basis = str(_ca.get("basis", "")).strip() or "회계사 직접 입력 (수기 조정)"
+                    _custom_lines.append({
+                        "name": _nm, "amount": _amt, "category": _cat,
+                        "disposition": _disp, "basis": _basis,
+                    })
+                    _add_detail(
+                        f"[수기조정] {_nm}", _amt, _basis, [],
+                        reason="회계사가 3단계 수기입력에서 직접 추가한 세무조정 — 규칙엔진 미포착 항목",
+                        tax_basis=f"{_cat} (회계사 직접 입력)", disposition=_disp,
+                    )
+                result.custom_adjustment_lines = _custom_lines
+                _add_detail("재고자산 평가 조정", result.inventory_adjustment, "영§74",
+                            _inv_basis_lines,
+                            reason=_inv_reason,
                             tax_basis="신고 평가방법으로 재계산한 재고자산가액과 장부가액의 차액 (영§74)",
                             disposition="유보")
                 if result.welfare_disallowed_lines:
@@ -742,20 +776,26 @@ def render(proj) -> None:
                         if mi.vehicle_asset_checks.get(a.asset_code)
                     ]
                     _veh_results = []
+                    _veh_matched: dict = {}
+                    _veh_common = 0
                     if _veh_assets:
-                        # 차량유지비(기타비용)는 분개장에 차량별 미구분 → 감가상각비 비율로 안분(근사).
-                        # (감가상각비 합계가 0이면 균등 안분)
-                        _depr_sum = sum(a.company_depr for a in _veh_assets)
-                        _n = len(_veh_assets)
+                        # 관련비용(차량유지비)을 차량번호로 차량별 귀속 — 자산명의 차량번호와 일치하는 분개는
+                        # 해당 차량에 정확히 귀속하고, 차량번호 식별불가(공통·개인차량·미기재)·등록외 차량분은
+                        # 감가상각비율로 안분한다(총액 = agg.vehicle_expense 보존, 세무조정 금액 불변).
+                        from src.rules.vehicle_match import attribute_by_vehicle, allocate_other_expense
+                        _veh_pool = agg.detail_lines.get("업무용승용차 관련비용") or []
+                        _per = attribute_by_vehicle(_veh_assets, _veh_pool)
+                        _veh_matched = {
+                            a.asset_code: sum(int(l.debit or 0) for l in _per.get(a.asset_code, []))
+                            for a in _veh_assets
+                        }
+                        _veh_common = max(0, agg.vehicle_expense - sum(_veh_matched.values()))
+                        _alloc = allocate_other_expense(_veh_assets, _veh_pool, agg.vehicle_expense)
                         for a in _veh_assets:
-                            if _depr_sum > 0:
-                                _alloc_other = int(agg.vehicle_expense * a.company_depr / _depr_sum)
-                            else:
-                                _alloc_other = int(agg.vehicle_expense / _n)
                             _veh_results.append(calc_vehicle(
                                 vehicle_id=a.asset_name or a.asset_code,
                                 depreciation=a.company_depr,
-                                other_expense=_alloc_other,
+                                other_expense=_alloc[a.asset_code],
                                 business_use_ratio=mi.vehicle_business_ratio,
                                 has_insurance=mi.vehicle_has_insurance,
                                 has_logbook=mi.vehicle_has_logbook,
@@ -787,14 +827,21 @@ def render(proj) -> None:
                             "⚠ 업무전용보험 미가입 → 해당 차량 관련비용 전액 손금불산입 (영§50의2④1호). "
                             "보험 가입 여부는 차량별로 다를 수 있으니 3단계에서 확인하세요"
                         )
-                    for v in _veh_results:
+                    for _vi, v in enumerate(_veh_results):
                         _rel = v.depreciation + v.other_expense
                         if not v.has_insurance:
                             _line = f"· {v.vehicle_id}: 관련비용 {_rel:,}원 전액 손금불산입 (보험 미가입)"
                         else:
                             _ratio_src = "입력값" if v.has_logbook else f"min(1, 한도 {v.no_logbook_limit:,}÷관련비용)"
+                            # 기타비용 = 차량번호 매칭분 + 공통 안분분 (자산별 귀속일 때 분해 표시)
+                            if _veh_assets and _vi < len(_veh_assets):
+                                _m = _veh_matched.get(_veh_assets[_vi].asset_code, 0)
+                                _cs = v.other_expense - _m
+                                _other_src = f"기타 {v.other_expense:,} (차량번호매칭 {_m:,} + 공통안분 {_cs:,})"
+                            else:
+                                _other_src = f"기타 {v.other_expense:,}"
                             _line = (f"· {v.vehicle_id}: 관련비용 {_rel:,}원 "
-                                     f"(상각 {v.depreciation:,} + 기타 {v.other_expense:,}, 기타는 상각비율 안분) · "
+                                     f"(상각 {v.depreciation:,} + {_other_src}) · "
                                      f"업무사용 {v.business_use_ratio:.0%} [{_ratio_src}] · "
                                      f"개인사용 부인 {v.personal_use_disallowed:,} + 상각한도초과 {v.depreciation_limit_excess:,}")
                         _veh_formula.append(_line)
@@ -803,11 +850,13 @@ def render(proj) -> None:
                         "(상각한도초과분은 유보·이월, 개인사용분은 사외유출)"
                     )
                     _veh_formula.append(
-                        "※ 차량유지비는 분개장에 차량별로 구분되지 않아 감가상각비 비율로 안분함 — "
-                        "차량별 실제 유지비·보험 가입이 다르면 3단계에서 보정"
+                        f"※ 관련비용은 적요·차량번호로 차량별 귀속(매칭 {sum(_veh_matched.values()):,}원) 후, "
+                        f"차량번호 식별불가 공통분(개인차량·미기재 포함)·등록외 차량분 {_veh_common:,}원을 "
+                        "감가상각비율로 안분합니다 — 총액은 보존됩니다(세무조정 금액 불변). "
+                        "차량별 실제 유지비·보험이 다르면 3단계에서 보정"
                     )
-                    # 근거분개 표시 — 등록 차량번호와 정확히 일치하거나 차량번호 식별이 안 되는(공통) 분개만 포함.
-                    # 적요·차량번호에 '다른 차량'의 번호가 식별되는 분개는 제외(오매칭 방지). 금액은 불변(표시만 정정).
+                    # 근거분개 표시 — 계산에 포함된 관련비용 풀 전체를 표시한다.
+                    # 등록 차량 외 번호가 식별된 분개는 차량별 직접매칭은 하지 않고 공통 안분 대상으로 둔다.
                     from src.rules.vehicle_match import registered_plates, filter_vehicle_lines
                     _veh_pool = agg.detail_lines.get("업무용승용차 관련비용") or []
                     _veh_plates = registered_plates(_veh_assets)
@@ -815,12 +864,12 @@ def render(proj) -> None:
                     if _veh_foreign:
                         _veh_formula.append(
                             f"※ 근거분개 표시에서 등록 차량({len(_veh_plates)}대) 외 다른 차량번호가 적요·차량번호에 "
-                            f"식별된 분개 {len(_veh_foreign):,}건은 제외했습니다 — 해당 분개가 업무용승용차에 "
-                            "해당하는지 별도 확인이 필요할 수 있습니다(금액 집계는 변동 없음)."
+                            f"식별된 분개 {len(_veh_foreign):,}건은 특정 차량에 직접 귀속하지 않고 공통 안분에 포함했습니다 — "
+                            "해당 분개가 업무용승용차 관련비용인지 별도 확인이 필요할 수 있습니다."
                         )
                     _veh_related = sum(v.depreciation + v.other_expense for v in _veh_results)
                     _add_detail("업무용승용차 관련비용", result.vehicle_disallowed, "법§27의2, 영§50의2",
-                                _veh_formula, _veh_kept,
+                                _veh_formula, _veh_pool,
                                 reason="3단계에서 업무용승용차로 체크한 차량운반구 자산별로 영§50의2 한도를 "
                                        "각각 적용(한도 풀링 방지). 보험·운행기록부·업무사용비율은 3단계 입력 적용. "
                                        "증빙불비 판정이 아니라 업무사용비율·한도 조정입니다",
@@ -867,11 +916,16 @@ def render(proj) -> None:
                     _nba_kw = (str(_nba.get("계정명", "")).replace(" ", ""),)
                     if not _nba_kw[0]:
                         continue
-                    _nba_open = _bs_amount_detail(loader, _nba_kw, column="기초잔액")[0]
-                    _nba_j = account_jeoksu(
-                        loader.journals, _nba_kw, fy_start, fy_end_val,
-                        opening=_nba_open, debit_positive=True,
-                    )
+                    # 계정 세부명세에서 거래처 일부만 업무무관으로 선택한 경우(전체계정=False)는
+                    # 계정 전체 적수가 아니라 선택 금액×일수로 근사한다 (과대계상 방지).
+                    if not _nba.get("전체계정", True):
+                        _nba_j = 0
+                    else:
+                        _nba_open = _bs_amount_detail(loader, _nba_kw, column="기초잔액")[0]
+                        _nba_j = account_jeoksu(
+                            loader.journals, _nba_kw, fy_start, fy_end_val,
+                            opening=_nba_open, debit_positive=True,
+                        )
                     if _nba_j > 0:
                         _nonbiz_jeoksu += _nba_j
                         _nonbiz_jeoksu_src.append(f"{_nba_kw[0]}: 일별 계산 {_nba_j:,}")
@@ -922,7 +976,6 @@ def render(proj) -> None:
                 # 부당행위계산 부인 (법§52, 영§88③·89⑤) — 건별 질문형 입력
                 # 3단계에서 건별로 거래유형·시가·거래가액·귀속자를 입력 → 영§88③ 게이트 통과분만
                 from src.ui.review_specs import unfair_transaction_spec
-                from src.ui.review_questions import build_results
                 _unfair_spec = unfair_transaction_spec()
                 _unfair_results = build_results(
                     _unfair_spec, (mi.review_answers or {}).get("부당행위계산 부인", []),
@@ -1020,7 +1073,7 @@ def render(proj) -> None:
                 if mi.donation_special or mi.donation_general or mi.donation_nondesignated:
                     _auto_items.add("기부금 한도")
                 _auto_items.add("유가증권 평가손익")  # 분개장 집계로 항상 자동
-                if mi.inventory_valuation_adjustment:
+                if result.inventory_adjustment:
                     _auto_items.add("재고자산 평가")
                 if mi.welfare_disallowed:
                     _auto_items.add("복리후생비 (열거 외 항목)")
@@ -1268,6 +1321,26 @@ def render(proj) -> None:
                     ("건설자금이자 자본화", result.interest_construction, "유보"),
                 ] if amt
             ]
+            # 회계사 직접 입력 세무조정 중 유보/△유보 — 차기 전기이월 유보로 승계 (을표 코드와 일치)
+            _new_reserves += [
+                {"code": f"[수기] {str(c.get('name', '')).strip()}",
+                 "amount": int(c.get("amount", 0) or 0),
+                 "disposition": c.get("disposition")}
+                for c in (result.custom_adjustment_lines or [])
+                if c.get("disposition") in ("유보", "△유보") and int(c.get("amount", 0) or 0)
+            ]
+            # 의제배당 무상증자·자본전입형 유보 — 차기 주식 양도 시 추인되므로 전기이월 유보로 승계.
+            #   을표 build_reserve_status의 흡수 코드와 동일하게 맞춰 opening 누적이 끊기지 않게 한다.
+            _dd_yubo_next = sum(
+                int(_d.get("amount", 0) or 0)
+                for _d in (getattr(result, "deemed_dividend_lines", None) or [])
+                if str(_d.get("disposition", "")).strip() == "유보"
+            )
+            if _dd_yubo_next:
+                _new_reserves.append({
+                    "code": "의제배당(자본전입형) 유보",
+                    "amount": _dd_yubo_next, "disposition": "유보",
+                })
             proj.tax_adjustments = {
                 "fiscal_year_end": str(fy_end_val),
                 "net_income": result.net_income,
@@ -1311,6 +1384,51 @@ def render(proj) -> None:
                 "법인세와 별도로 신고·납부하며 위 차감납부세액에 포함되지 않습니다."
             )
 
+        # ── 중소기업 결손금 소급공제 환급 (법§72, 영§110) — 독립 카드 (별지15호·소득처분과 무관) ──
+        _cur_loss = max(0, -int(r.business_income))
+        if mi.loss_carryback_enabled and _cur_loss > 0:
+            from src.rules.loss_carryback import compute_loss_carryback_from_manual
+            _lcb = compute_loss_carryback_from_manual(
+                mi, is_sme=is_sme, fy_start=fy_start, current_loss=_cur_loss)
+            # 차기 승계용 — 소급공제 적용 결손금(이월공제 제외 대상). carry_forward_from가 사용.
+            if proj.tax_adjustments is None:
+                proj.tax_adjustments = {}
+            proj.tax_adjustments["loss_carryback_applied_loss"] = (
+                int(_lcb.applied_loss) if _lcb.eligible else 0)
+            st.divider()
+            st.markdown(section_title(
+                "중소기업 결손금 소급공제 환급 (법§72)",
+                "당기 결손금을 직전 사업연도에 소급하여 법인세를 환급받는 별건 — 별지15호와 무관.",
+            ), unsafe_allow_html=True)
+            if _lcb.eligible:
+                st.metric("환급가능세액 (초안)", f"{_lcb.refund:,.0f}원")
+            else:
+                st.info("현재 입력으로는 환급 요건 미충족 — 아래 사유를 확인하세요.")
+            if _lcb.needs_manual_step2:
+                st.warning(
+                    "직전 사업연도 세율테이블이 엔진에 미수록되어 **2호((직전 과표−결손금)×직전 세율)를 "
+                    "회계사가 직접 입력**해야 합니다. 입력 전까지 환급액은 0으로 보수 처리됩니다.")
+            with st.expander("계산내역·근거 (법§72①, 영§110①)", expanded=_lcb.eligible):
+                st.markdown(
+                    f"- **당기 결손금**: {_cur_loss:,}원 (= max(0, −각사업연도소득))\n"
+                    f"- **소급공제 적용 결손금**: {_lcb.applied_loss:,}원 "
+                    f"(상한 = min(당기결손금, 직전 과표) = {_lcb.max_carryback_loss:,}원, 영§110⑤)\n"
+                    f"- **① 직전 산출세액**(§55의2 토지등양도 제외): {_lcb.step1:,}원\n"
+                    f"- **② (직전 과표 − 적용결손금) × 직전 세율**: {_lcb.step2:,}원"
+                    + (f" (세율테이블 {_lcb.prior_rate_table_from})" if _lcb.prior_rate_table_from else "")
+                    + "\n"
+                    f"- **한도**(직전 산출세액 − 직전 공제·감면세액, 영§110①): {_lcb.refund_limit:,}원\n"
+                    f"- **환급가능세액** = min(① − ②, 한도) = **{_lcb.refund:,}원**"
+                )
+                for _msg in _lcb.reasons:
+                    st.caption("• " + _msg)
+                st.caption(
+                    "⚠ 추징 주의(법§72⑤·영§110④): 추후 당기 결손금 경정 감소·직전 경정·중소기업 탈락 시 "
+                    "환급세액에 이자상당액(1일 10만분의 22)을 더해 징수됩니다. "
+                    "소급공제 신청 여부·금액은 회계사·납세자가 확정하며, 잔여 결손금의 이월공제(법§13①1호)와 "
+                    "비교 검토가 필요합니다.")
+                st.caption("근거: 법§72(001563/007200)·영§110(003608/011000) — 별지 제68호 소급공제법인세액환급신청서.")
+
         st.divider()
         st.markdown(section_title(
             "소득금액조정합계표 (별지 제15호서식 구조)",
@@ -1322,7 +1440,8 @@ def render(proj) -> None:
         _disp_choices = dict((proj.tax_adjustments or {}).get("disposition_choices", {}))
         if (r.deemed_interest or r.unfair_transaction or r.welfare_disallowed
                 or r.vehicle_disallowed or r.interest_unknown_creditor
-                or r.interest_nonreal_name):
+                or r.interest_nonreal_name or r.officer_bonus_excess
+                or r.officer_retirement_excess):
             with st.expander("소득처분 귀속자 확정 (영§106) — 사외유출 항목"):
                 st.caption("귀속자: 주주→배당 · 임원·직원→상여 · 법인등→기타사외유출 · 기타→기타소득 · 불분명→대표자상여")
                 _opts = ["(미선택)"] + ATTRIBUTION_TYPES
@@ -1357,6 +1476,13 @@ def render(proj) -> None:
                 if _veh_personal:
                     _disp_sel(f"업무용승용차 개인사용분 ({_veh_personal:,}원 · 감가상각 한도초과는 유보 별도)",
                               "업무용승용차 개인사용분")
+                # 임원 상여·퇴직 한도초과 — 기본 상여(귀속 임원), 주주임원·이익처분 성격이면 배당 선택
+                if r.officer_bonus_excess:
+                    _disp_sel(f"임원 상여금 한도초과 ({r.officer_bonus_excess:,}원) — 기본 상여",
+                              "임원 상여금 한도초과")
+                if r.officer_retirement_excess:
+                    _disp_sel(f"임원 퇴직금 한도초과 ({r.officer_retirement_excess:,}원) — 기본 상여",
+                              "임원 퇴직금 한도초과")
                 if r.interest_unknown_creditor:
                     _wh = st.number_input(
                         f"채권자불분명 사채이자 원천세 상당액 (총 {r.interest_unknown_creditor:,}원 중)",
@@ -1366,6 +1492,9 @@ def render(proj) -> None:
                         help="원천세 상당액=기타사외유출, 잔액=대표자상여 (영§106)",
                     )
                     _disp_choices["채권자불분명 사채이자|원천세"] = int(_wh)
+                    if _wh == 0:
+                        st.caption("⚠ 원천세 상당액 0 → **전액 대표자상여**로 처분됩니다(대표자 종소세 영향). "
+                                   "채권자불분명 사채이자는 통상 원천징수세액 상당액이 기타사외유출이니 확인하세요.")
                 if r.interest_nonreal_name:
                     _wh2 = st.number_input(
                         f"비실명 채권·증권이자 원천세 상당액 (총 {r.interest_nonreal_name:,}원 중)",
@@ -2082,4 +2211,3 @@ def render(proj) -> None:
             file_name=f"세무조정안내_{proj.company.name}_{fy_end_val}.txt",
             mime="text/plain", key="client_memo_dl",
         )
-

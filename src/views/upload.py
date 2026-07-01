@@ -54,6 +54,7 @@ def render(loader: SmartALoader) -> None:
         ("분개장",              "전표·분개장"),
         ("계정별원장",          "계정별원장"),
         ("계정별명세서",        "계정별 잔액명세서 (임대보증금·차입금 등 자동 분석)"),
+        ("결산부속명세서",      "결산부속명세서 (계정별 거래처 세부 — 업무무관자산 드릴다운)"),
     ]
 
     file_types: dict[str, object | None] = {name: None for name, _ in FILE_DEFS}  # 업로드 파일 객체

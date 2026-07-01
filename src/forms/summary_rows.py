@@ -31,6 +31,11 @@ def adjustment_rows(
     def _disp(key: str, default: str) -> str:
         return default if legacy else resolve_disposition(ch.get(key))
 
+    def _disp_or(key: str, default: str) -> str:
+        """귀속자 선택이 있으면 그 처분을, 없으면 default 유지(레거시·미선택 모두 무회귀)."""
+        v = ch.get(key)
+        return resolve_disposition(v) if v else default
+
     add_items = [
         ("손금불산입", "감가상각비 한도초과",      r.depreciation_excess,      "법§23",    "유보"),
         ("손금불산입", "기업업무추진비 한도초과",   r.entertainment_excess,     "법§25④",   "기타사외유출"),
@@ -41,8 +46,8 @@ def adjustment_rows(
         ("손금불산입", "법인세비용",               r.corporate_tax_expense,    "법§21 1호", "기타사외유출"),
         ("손금불산입", "외화환산손실 (평가 미신고)", r.forex_loss_disallowed,   "법§42③",   "유보"),
         ("손금불산입", "파생상품 평가손실 (미신고)", r.derivative_loss_disallowed, "영§76",  "유보"),
-        ("손금불산입", "임원 상여금 한도초과",      r.officer_bonus_excess,     "법§26, 영§43", "상여"),
-        ("손금불산입", "임원 퇴직금 한도초과",      r.officer_retirement_excess, "법§26, 영§44", "상여"),
+        ("손금불산입", "임원 상여금 한도초과",      r.officer_bonus_excess,     "법§26, 영§43②", _disp_or("임원 상여금 한도초과", "상여")),
+        ("손금불산입", "임원 퇴직금 한도초과",      r.officer_retirement_excess, "법§26, 영§44", _disp_or("임원 퇴직금 한도초과", "상여")),
         ("손금불산입", "업무용승용차 개인사용분",   r.vehicle_disallowed - r.vehicle_depr_excess, "법§27의2", _disp("업무용승용차 개인사용분", "상여 등")),
         ("손금불산입", "업무용승용차 감가상각 한도초과", r.vehicle_depr_excess,  "법§27의2③", "유보"),
         ("손금불산입", "건설자금이자",             r.interest_construction,    "법§28①3호", "유보"),
@@ -82,16 +87,20 @@ def adjustment_rows(
         add_items.append(("손금불산입", "복리후생비 (열거 외)", r.welfare_disallowed,
                           "영§45", _disp("복리후생비 (열거 외)", "상여 등")))
 
-    # 의제배당 (법§16①) — 사유별 익금산입. 자기 익금이라 소득처분 不요(유보 또는 -).
+    # 의제배당 (법§16①) — 사유별 익금산입. 자기 익금이라 사외유출 아님.
+    #   처분(무상증자=유보 / 감자·합병 등=기타)은 review_specs의 DispositionRule이 사유별로 결정해
+    #   line의 disposition으로 실어 보낸다. 여기선 그 값을 그대로 쓰고, 비면 보수적으로 '기타'.
     _dd_lines = getattr(r, "deemed_dividend_lines", None) or []
     if _dd_lines and sum(int(x.get("amount", 0)) for x in _dd_lines) == r.deemed_dividend:
         for _x in _dd_lines:
             _ref = str(_x.get("ref", "")).strip()
             _label = "의제배당" + (f" ({_ref})" if _ref else "")
             add_items.append(("익금산입", _label, int(_x.get("amount", 0)),
-                              _x.get("basis", "법§16①"), _x.get("disposition") or "유보"))
+                              _x.get("basis", "법§16①"),
+                              _x.get("disposition") or "기타"))
     elif getattr(r, "deemed_dividend", 0):
-        add_items.append(("익금산입", "의제배당", r.deemed_dividend, "법§16①", "유보"))
+        # 사유 미상(직접 입력분) → 기타(보수적, 사외유출 아님). 무상증자면 회계사가 유보로 정정.
+        add_items.append(("익금산입", "의제배당", r.deemed_dividend, "법§16①", "기타"))
 
     # 채권자불분명 사채이자 — 원천세 상당액=기타사외유출 / 잔액=대표자상여 (영§106)
     if r.interest_unknown_creditor:
@@ -137,4 +146,21 @@ def adjustment_rows(
         ("익금불산입", "국세환급금 이자",          r.refund_interest_excluded, "법§18 4호", "기타"),
         ("익금불산입", "부가가치세 매출세액",       r.vat_output_excluded,      "법§18 5호", "기타"),
     ]
+
+    # 회계사 직접 입력 세무조정 — 카테고리에 따라 가산/차감 행으로 분배
+    for _c in getattr(r, "custom_adjustment_lines", None) or []:
+        _cat = _c.get("category", "")
+        _row = (_cat, f"[수기] {_c.get('name', '')}", int(_c.get("amount", 0)),
+                _c.get("basis", "회계사 직접 입력"), _c.get("disposition", "검토필요"))
+        if _cat in ("익금산입", "손금불산입"):
+            add_items.append(_row)
+        elif _cat in ("손금산입", "익금불산입"):
+            deduct_items.append(_row)
+        else:
+            # 알 수 없는 조정구분 — 조용히 누락하지 않고 '검토필요' 행으로 노출(회계사 확인).
+            #   (엔진 경로는 calc.py에서 4종으로 검증하므로 정상 흐름엔 도달하지 않음 — 방어)
+            add_items.append(("검토필요", f"[수기] {_c.get('name', '')}",
+                              int(_c.get("amount", 0)),
+                              _c.get("basis", "회계사 직접 입력"),
+                              f"검토필요 (구분 미상: {_cat or '미입력'})"))
     return add_items, deduct_items

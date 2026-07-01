@@ -1,11 +1,13 @@
 """수기 입력 UI 컴포넌트 + 입력 검증."""
 from __future__ import annotations
 from datetime import date
+from itertools import islice
 
 import streamlit as st
 
 from src.project.taxproj import ManualInput
 from src.rules.tax_credit_catalog import lookup_credit_spec
+from src.ui.credit_formula import credit_formula_type, render_credit_formula
 from src.rules.penalty_surtax import aggregate_surtax
 from src.ui.review_questions import ReviewItemSpec, should_show, build_result
 from src.ui.review_specs import (
@@ -94,26 +96,6 @@ def _comp_rows(journals, name_keywords: tuple, exclude: tuple = ()) -> list:
     return rows
 
 
-def _comp_by_counterparty(journals, name_keywords: tuple, exclude: tuple = ()) -> dict:
-    """특정 계정의 거래처별 차변 합계 (임원 선택·자동 집계용)."""
-    out: dict[str, int] = {}
-    for who, _, ln in _comp_rows(journals, name_keywords, exclude):
-        out[who] = out.get(who, 0) + ln.debit
-    return out
-
-
-def _detect_amount(journals, name_keywords: tuple = (), desc_keywords: tuple = ()) -> int:
-    """계정명·적요 키워드로 분개장 차변 합계 탐지 (참고 금액 표시용)."""
-    total = 0
-    for ln in journals or []:
-        nm = ln.account_name.replace(" ", "")
-        if any(k in nm for k in name_keywords) or (
-            desc_keywords and any(k in ln.description for k in desc_keywords)
-        ):
-            total += ln.debit
-    return total
-
-
 # 기부금 자동 분류 키워드 (거래처명·적요 기준 추천 — 최종 판단은 사용자)
 _DONATION_SPECIAL_KW = (
     "국가", "지방자치", "시청", "군청", "구청", "도청", "국방", "군부대", "위문",
@@ -152,6 +134,133 @@ _NONBIZ_KW = (
 _NONBIZ_EXCLUDE = ("가지급금", "대여금", "주임종")
 
 
+def _render_nonbiz_drilldown(mi: ManualInput, loader, det) -> None:
+    """결산부속명세서(계정별 세부) 2단계 드릴다운 — 계정 선택 → 세부 라인 체크.
+
+    선택 라인은 계정별로 합산되어 업무무관자산 잔액·적수에 반영된다.
+    같은 계정의 일부 라인만 선택하면 calc는 금액×일수 근사를 쓴다(전체계정=False).
+    """
+    import pandas as pd
+
+    det = det.copy()
+    det["금액"] = det["금액"].apply(lambda v: int(v) if str(v).strip() not in ("", "nan") else 0)
+    # 라인 고유키 — 계정·거래처·적요·금액 조합 (체크 상태 저장/복원에 사용)
+    det["_lid"] = (
+        det["계정코드"].astype(str) + "|" + det["거래처코드"].astype(str) + "|"
+        + det["거래처명"].astype(str) + "|" + det["적요"].astype(str) + "|"
+        + det["금액"].astype(str)
+    )
+    saved = dict(mi.non_business_asset_checks or {})
+    det["_sel"] = det["_lid"].map(lambda x: bool(saved.get(x)))
+
+    grp = (det.groupby(["계정코드", "계정명"], as_index=False)
+              .agg(금액=("금액", "sum"), 라인수=("금액", "size"), 선택=("_sel", "sum")))
+    grp = grp[grp["금액"] != 0].sort_values("금액", ascending=False).reset_index(drop=True)
+    if grp.empty:
+        st.caption("결산부속명세서에서 잔액이 있는 계정을 찾지 못했습니다.")
+        return
+
+    # ── 1단계: 계정 선택 (전체 계정) ──
+    def _acct_label(i: int) -> str:
+        row = grp.iloc[i]
+        nm = str(row["계정명"])
+        star = "⭐ " if any(k in nm for k in _NONBIZ_KW) else ""
+        warn = "  ⚠인정이자 중복주의" if any(k in nm for k in _NONBIZ_EXCLUDE) else ""
+        chk = f"  ✅{int(row['선택'])}건" if int(row["선택"]) else ""
+        return f"{star}{nm} · {int(row['금액']):,}원 · {int(row['라인수'])}건{chk}{warn}"
+
+    sel = st.selectbox(
+        "① 계정 선택 — 전체 계정에서 고른 뒤 ② 명세에서 업무무관 항목을 체크하세요",
+        range(len(grp)), format_func=_acct_label, key="nonbiz_acct_sel",
+    )
+    acct_code = str(grp.iloc[sel]["계정코드"])
+    acct_name = str(grp.iloc[sel]["계정명"])
+    if any(k in acct_name for k in _NONBIZ_EXCLUDE):
+        st.warning(
+            f"**{acct_name}**: 특수관계인 가지급금·대여금은 '가지급금 인정이자' 섹션의 분개 "
+            "체크로 이미 법§28①4호나목 분자에 반영됩니다 — 여기서 또 선택하면 중복될 수 있습니다."
+        )
+
+    # ── 2단계: 선택 계정의 세부 라인 체크 ──
+    lines = det[(det["계정코드"].astype(str) == acct_code)
+                & (det["계정명"].astype(str) == acct_name)].reset_index(drop=True)
+    _disp = pd.DataFrame({
+        "해당":   lines["_sel"].astype(bool),
+        "거래처명": lines["거래처명"].astype(str),
+        "적요":   lines["적요"].astype(str),
+        "금액":   lines["금액"].astype(int),
+        "비고":   lines["비고"].astype(str),
+    })
+    _edited = st.data_editor(
+        _disp,
+        column_config={
+            "해당": st.column_config.CheckboxColumn("업무무관 해당"),
+            "금액": st.column_config.NumberColumn("금액 (원)", format="%d"),
+        },
+        disabled=["거래처명", "적요", "금액", "비고"],
+        use_container_width=True, hide_index=True,
+        key=f"nonbiz_lines_{acct_code}_{acct_name}",
+        height=min(360, 60 + 36 * len(lines)),
+    )
+    # 현재 계정의 체크만 갱신 — 다른 계정 선택분은 saved에 그대로 보존
+    for i in range(len(lines)):
+        saved[str(lines.iloc[i]["_lid"])] = bool(_edited.iloc[i]["해당"])
+    mi.non_business_asset_checks = saved
+
+    # ── 전체 누적 집계 — 계정별 1항목 (calc는 계정명 단위 적수, 중복 호출 방지) ──
+    det["_sel"] = det["_lid"].map(lambda x: bool(saved.get(x)))
+    chosen = det[det["_sel"]]
+    line_counts = det.groupby(["계정코드", "계정명"]).size()
+    nonbiz_list = []
+    for (code, nm), sub in chosen.groupby(["계정코드", "계정명"]):
+        _names = [s for s in sub["거래처명"].astype(str) if s]
+        _disp_name = (_names[0] + (f" 외 {len(_names)-1}건" if len(_names) > 1 else "")) if _names else ""
+        nonbiz_list.append({
+            "계정명":   str(nm),
+            "금액":     int(sub["금액"].sum()),
+            "출처":     "계정명세",
+            "전체계정":  len(sub) >= int(line_counts.get((code, nm), 0)),
+            "거래처":   _disp_name,
+        })
+    mi.non_business_assets = nonbiz_list
+    mi.non_business_asset_balance = int(sum(x["금액"] for x in nonbiz_list))
+
+    # ── 선택 요약 + 차입금 비율 ──
+    if nonbiz_list:
+        _sumdf = pd.DataFrame([
+            {"계정명": x["계정명"], "거래처": x["거래처"], "금액": x["금액"],
+             "적수기준": "계정전체" if x["전체계정"] else "선택금액×일수"}
+            for x in nonbiz_list
+        ])
+        st.markdown(
+            f"**선택한 업무무관자산 — {len(nonbiz_list)}계정 합계 "
+            f"{mi.non_business_asset_balance:,}원**"
+        )
+        st.dataframe(
+            _sumdf, use_container_width=True, hide_index=True,
+            column_config={"금액": st.column_config.NumberColumn("금액 (원)", format="%d")},
+        )
+    else:
+        st.caption("아직 선택된 업무무관 항목이 없습니다 — 계정을 골라 세부 라인을 체크하세요.")
+
+    _numer = mi.non_business_asset_balance + mi.related_loan_balance
+    if _numer > 0:
+        _debt = _bs_amount(loader, ("단기차입금", "장기차입금", "유동성장기부채"))
+        if _debt:
+            _ratio = min(1.0, _numer / _debt)
+            st.caption(
+                f"업무무관자산 {mi.non_business_asset_balance:,}원 + 특수관계인 가지급금 "
+                f"{mi.related_loan_balance:,}원 = **{_numer:,}원** / 차입금 {_debt:,}원 → "
+                f"지급이자 × {_ratio:.1%} 손금불산입 예정 (채권자불분명·건설자금 제외 후, 영§53②). "
+                f"※ 기말잔액 기준 근사 — 정밀 계산은 적수 기준"
+            )
+        else:
+            st.warning(
+                "차입금 잔액을 찾지 못해 비율을 계산할 수 없습니다 — "
+                "계정별명세서를 업로드하거나 간주임대료 섹션에서 차입금을 입력하세요."
+            )
+
+
 def _render_nonbiz_assets(mi: ManualInput, loader) -> None:
     """업무무관자산 선택 — 계정별명세서(없으면 재무상태표)의 계정을 표시하고
     사용자가 체크한 잔액 합계를 법§28①4호 지급이자 손금불산입 계산에 연결한다.
@@ -167,6 +276,13 @@ def _render_nonbiz_assets(mi: ManualInput, loader) -> None:
         "특수관계인 가지급금(법§28①4호나목)은 '가지급금 인정이자' 섹션의 분개 체크로 "
         "별도 반영되므로 이 표에는 표시되지 않습니다."
     )
+
+    # 결산부속명세서(계정별 세부)가 있으면 계정→세부라인 드릴다운으로 선택
+    _det = getattr(loader, "account_details", None) if loader is not None else None
+    if _det is not None and not _det.empty:
+        st.caption("결산부속명세서 인식 — 계정을 펼쳐 거래처별 세부 라인에서 업무무관자산을 선택합니다.")
+        _render_nonbiz_drilldown(mi, loader, _det)
+        return
 
     # 계정별명세서 우선, 없으면 재무상태표에서 계정 목록 추출
     src_rows: list[tuple[str, int, str]] = []
@@ -290,18 +406,21 @@ def _render_loan_classifier(mi: ManualInput, journals: list, related_parties: li
     st.markdown("**가지급금·대여금 분개 — 특수관계인 가지급금 해당 건을 체크하세요**")
     st.caption(
         f"분개장에서 가지급금·대여금 계정 {len(lines)}건을 가져왔습니다. "
-        + (f"1단계 특수관계인 목록({len(rp_list)}명) 기준으로 거래처가 일치하는 건과 "
-           if rp_list else "특수관계인 목록이 비어 있어 ")
-        + "가지급금 계정 건을 추천 체크했습니다 — 최종 판단은 회계사가 확정하세요. "
+        + (f"1단계 특수관계인 목록({len(rp_list)}명) 기준으로 **거래처가 일치하는 건만** 추천 체크했습니다 "
+           if rp_list else
+           "특수관계인 목록이 비어 있어 가지급금 계정 건을 임시 추천 체크했습니다(1단계에서 특수관계인을 "
+           "입력하면 매칭 건만 추천됩니다) ")
+        + "— 특수관계 성립·업무무관성은 분개로 확정 불가하므로 최종 판단은 회계사가 확정하세요. "
         "체크 건은 ①인정이자(법§52, 영§88①6호) ②업무무관자산 지급이자(법§28①4호나목) "
         "두 조정에 모두 반영됩니다."
     )
     saved = (mi.misc_line_checks or {}).get("related_loan_lines", {})
     df = pd.DataFrame([
         {
+            # 추천 체크 = 특수관계인 거래처 매칭 건만(영§2⑧). 특수관계인 미입력 시에만 가지급금 계정 폴백.
             "해당": bool(saved.get(
                 _line_key(ln),
-                _is_rp(ln) or "가지급금" in ln.account_name.replace(" ", ""),
+                _is_rp(ln) or (not rp_list and "가지급금" in ln.account_name.replace(" ", "")),
             )),
             "특수관계인": "✓" if _is_rp(ln) else "",
             "날짜": str(ln.date),
@@ -371,7 +490,8 @@ def _render_loan_classifier(mi: ManualInput, journals: list, related_parties: li
         st.dataframe(pd.DataFrame(_net_rows), use_container_width=True, hide_index=True)
     st.caption(
         "※ 가수금은 가수금·주임종단기차입금 분개에서 동일 거래처 금액을 자동 탐지해 상계했습니다 "
-        "(영§53③ — 상환기간·이자율 약정이 있는 가수금은 상계 제외이므로 해당 시 수동 조정). "
+        "(동일인 가지급금·가수금 상계 — 인정이자 적수는 규칙§44, 지급이자 적수는 영§53③). "
+        "상환기간·이자율이 약정된 가수금은 상계하지 않는 것이 통설이므로(규칙·통칙) 해당 시 수동 조정. "
         "**인정이자는 5단계에서 체크 분개의 거래 날짜로 거래상대방별 일별 적수(積數)를 "
         "계산해 산정합니다** (영§89⑤, 별지 제19호 구조). 약정이자는 이자수익 분개에서 "
         "상대방별로 자동 매칭됩니다."
@@ -778,6 +898,77 @@ def _render_line_check(
 # unit별 '건' 명칭·도움말 (UI 표시용)
 _UNIT_NOUN = {"line": "건", "officer": "임원", "category": "종류", "item": "건"}
 
+# 복리후생비 귀속자(소득처분) 선택지 — welfare_spec DispositionRule mapping 키와 일치해야 함
+_WELFARE_WHO = ("임원·직원(상여)", "주주(배당)", "불분명(대표자상여)")
+
+
+def _render_welfare_table(mi: ManualInput, lines: list) -> None:
+    """복리후생비 — 표 형식 검토 (건별 카드 대신).
+
+    각 분개 행에 '지출성격: 열거외(손금불산입)' 체크(맨 오른쪽) + 귀속자(소득처분) + 부인금액.
+    체크된 행만 welfare_spec 답(category='열거 외 비용')으로 저장 → 기존 계산 경로와 호환.
+    영§45① 8개 열거항목은 손금 인정이므로 기본 미체크(자동 추천 안 함 — 적요만으론 판정 불가).
+    """
+    import pandas as pd
+    from src.ui.review_specs import welfare_spec
+    key = welfare_spec().key
+    if not lines:
+        st.caption("복리후생비·복리시설비 분개가 없습니다.")
+        return
+    saved = {str(a.get("_ref")): a for a in (mi.review_answers or {}).get(key, [])}
+    rows = []
+    for ln in lines:
+        k = _line_key(ln)
+        s = saved.get(k, {})
+        rows.append({
+            "날짜": str(ln.date),
+            "적요": (ln.description or "")[:30],
+            "거래처": ln.counterparty_name,
+            "금액": int(ln.debit or 0),
+            "귀속자(처분)": s.get("who", _WELFARE_WHO[0]),
+            "부인금액": int(s.get("amount", ln.debit) or 0),
+            "지출성격: 열거외(손금불산입)": s.get("category") == "열거 외 비용",
+            "_key": k,
+        })
+    df = pd.DataFrame(rows)
+    edited = st.data_editor(
+        df,
+        column_config={
+            "금액": st.column_config.NumberColumn("금액(원)", format="%d"),
+            "귀속자(처분)": st.column_config.SelectboxColumn(
+                "귀속자(처분)", options=_WELFARE_WHO,
+                help="열거외 손금불산입 시 소득처분 — 임직원=상여·주주=배당·불분명=대표자상여(영§106)"),
+            "부인금액": st.column_config.NumberColumn(
+                "부인금액(원)", format="%d",
+                help="기본=금액 전액. 경조사비(8호) 등 일부만 부인 시 조정(부분부인)"),
+            "지출성격: 열거외(손금불산입)": st.column_config.CheckboxColumn(
+                "지출성격: 열거외(손금불산입)",
+                help="영§45① 열거 8항목(직장체육·문화·회식·우리사주·건강/요양보험·어린이집·고용보험·"
+                     "경조사 등)은 손금 인정. 열거에 없는 지출만 체크"),
+            "_key": None,
+        },
+        disabled=["날짜", "적요", "거래처", "금액"],
+        hide_index=True, use_container_width=True, key="welfare_editor",
+        height=min(360, 60 + 36 * len(df)),
+    )
+    answers = []
+    for _, r in edited.iterrows():
+        if not bool(r["지출성격: 열거외(손금불산입)"]):
+            continue
+        answers.append({
+            "category": "열거 외 비용",
+            "amount": int(r["부인금액"] or 0),
+            "who": str(r["귀속자(처분)"]),
+            "_ref": str(r["_key"]),
+        })
+    if mi.review_answers is None:
+        mi.review_answers = {}
+    mi.review_answers[key] = answers
+    _disallowed = sum(a["amount"] for a in answers)
+    st.caption(
+        f"열거외 손금불산입 {len(answers)}건 · 합계 {_disallowed:,}원 — 체크·금액은 회계사 확정값입니다."
+    )
+
 
 def _render_review_line_cards(
     mi: ManualInput, spec: ReviewItemSpec, candidate_labels: list[str] | None = None,
@@ -1155,6 +1346,7 @@ def render_adjustment_data(
         _h3.markdown("**② 장부방법 (회계장부상 실제 적용)**")
 
         _mismatches = []
+        _mismatch_cats: list[str] = []
         for cat in _CATS:
             saved_m = mi.inventory_methods.get(cat, {})
             c1, c2, c3 = st.columns([1, 2, 2])
@@ -1175,15 +1367,25 @@ def render_adjustment_data(
             # 영§74: 무신고 시 선입선출법 강제, 신고방법과 장부방법 불일치 시 신고방법(또는 FIFO 중 큰 금액)
             if reported == "무신고" and book != "선입선출법":
                 _mismatches.append(f"{cat}: 무신고 — 선입선출법 강제 (장부 {book})")
+                _mismatch_cats.append(cat)
             elif reported not in ("해당없음", "무신고") and reported != book:
                 _mismatches.append(f"{cat}: 신고 {reported} ≠ 장부 {book}")
+                _mismatch_cats.append(cat)
 
         if _mismatches:
             st.warning("평가방법 조정 대상:\n" + "\n".join(f"- {m}" for m in _mismatches))
-        # ── 재고자산 평가 — 종류별 질문형 (영§74④ 단서: max(선입선출, 신고방법) 자동) ──
-        st.markdown("**재고자산 평가 조정 — 종류별 검토**")
-        st.caption("무신고=선입선출(부동산 개별법). 신고방법외·변경무신고는 신고평가액이 더 크면 신고방법 적용(단서).")
-        _render_review_line_cards(mi, inventory_spec(), list(_CATS))
+        # ── ② 평가액 입력 — ①에서 조정대상으로 식별된 종류만(중복 입력 방지, 영§74④ 단서 자동) ──
+        st.markdown("**② 재고자산 평가조정 — 위 ①에서 조정대상인 종류만 평가액 입력**")
+        if _mismatch_cats:
+            st.caption("①에서 무신고·신고≠장부로 표시된 종류만 평가액(장부·선입선출·신고방법)을 입력하면 "
+                       "조정금액이 산출됩니다. 무신고=선입선출(부동산 개별법), 신고방법외·변경무신고는 신고평가액이 "
+                       "더 크면 신고방법 적용(영§74④ 단서).")
+            _render_review_line_cards(mi, inventory_spec(), _mismatch_cats)
+        else:
+            st.caption("①에서 무신고·신고≠장부 종류가 없어 평가조정 대상이 없습니다. "
+                       "변경 무신고 등 특수사유가 있으면 아래에서 직접 입력하세요.")
+            with st.expander("재고 평가조정 직접 입력 (특수사유)"):
+                _render_review_line_cards(mi, inventory_spec(), list(_CATS))
         st.caption(
             "유가증권 평가손익은 분개장에서 자동 집계되어 부인됩니다 "
             "(일반법인 원가법 강제 — 영§75). 별도 입력 불필요.",
@@ -1271,17 +1473,20 @@ def render_adjustment_data(
                 "징벌적 손해배상금 (원)", min_value=0, value=mi.punitive_damages, step=1_000_000,
             ))
 
-        # ── 복리후생비 (영§45①) — 건별 질문형 (열거 게이트 → 귀속자 처분), 항상 렌더 ──
+        # ── 복리후생비 (영§45①) — 표 형식 검토 (지출성격 열거외 체크 + 귀속자 처분) ──
         st.divider()
-        st.markdown("**복리후생비 (영§45①) — 건별 검토**")
-        st.caption("열거 8항목(직장체육·경조사 등)은 손금 인정. '열거 외'만 손금불산입 + 귀속자 처분.")
-        _wf_cands = [
-            f"{str(ln.date)} · {ln.description[:20]} · {ln.counterparty_name} · {ln.debit:,}원"
-            for ln in (journals or [])
-            if (("복리후생비" in ln.account_name.replace(" ", "")
-                 or "복리시설비" in ln.account_name.replace(" ", "")) and ln.debit)
-        ]
-        _render_review_line_cards(mi, welfare_spec(), _wf_cands[:300])
+        st.markdown("**복리후생비 (영§45①) — 표 검토**")
+        st.caption(
+            "열거 8항목(직장체육·문화·회식·우리사주·건강/요양보험·어린이집·고용보험·경조사)은 손금 인정. "
+            "표 맨 오른쪽 **'지출성격: 열거외'**를 체크한 건만 손금불산입되고 귀속자로 소득처분됩니다. "
+            "적요만으론 열거 여부 판정이 어려워 자동 추천은 하지 않습니다(회계사 확정)."
+        )
+        def _is_welfare(ln) -> bool:
+            _n = ln.account_name.replace(" ", "")   # 라인당 1회만 정규화
+            return bool(ln.debit) and ("복리후생비" in _n or "복리시설비" in _n)
+        _wf_lines = list(islice(
+            (ln for ln in (journals or []) if _is_welfare(ln)), 500))   # 500건 조기종료
+        _render_welfare_table(mi, _wf_lines)
 
     with st.expander("가지급금 인정이자·수입배당금·간주임대료 (법§52·18의2, 조특법§138)"):
         # 가지급금·대여금 분개 체크 — 특수관계인 목록 기반 추천 (인정이자 + 업무무관이자 연동)
@@ -1406,6 +1611,25 @@ def render_adjustment_data(
             "보전 대상 이월결손금(영§16)은 법§14② 결손금 중 미공제분으로, "
             "**과세표준 공제기한(15년)이 지난 결손금도 포함**됩니다."
         )
+        # 분개장 파싱 — 자산수증이익·채무면제이익 계정의 수익(대변) 합계를 prefill (금액만, 판단은 회계사)
+        _gift_parsed = sum(
+            ln.credit for ln in (journals or [])
+            if "자산수증" in ln.account_name.replace(" ", "")
+        )
+        _debt_parsed = sum(
+            ln.credit for ln in (journals or [])
+            if any(k in ln.account_name.replace(" ", "") for k in ("채무면제", "채무조정이익"))
+        )
+        if _gift_parsed or _debt_parsed:
+            st.caption(
+                f"📄 분개장 발견 — 자산수증이익 **{_gift_parsed:,}원** · 채무면제이익 **{_debt_parsed:,}원** "
+                "(계정 대변 합계). ⚠ 국고보조금(법§36)·출자전환분은 제외 대상이며 보전 충당액·이월결손금 범위는 "
+                "분개로 확정 불가하니 회계사가 확인 후 적용하세요."
+            )
+            if st.button("분개 금액 불러오기 (수익 계상액 prefill)", key="gift_debt_prefill"):
+                mi.asset_gift_revenue = int(_gift_parsed)
+                mi.debt_forgiveness_revenue = int(_debt_parsed)
+                st.rerun()
         cda, cdb = st.columns(2)
         mi.asset_gift_revenue = int(cda.number_input(
             "자산수증이익 (수익 계상액, 원)", min_value=0,
@@ -1462,6 +1686,120 @@ def render_adjustment_data(
                  "정상 회계처리 시 손익 미반영이라 0",
         ))
 
+    with st.expander("중소기업 결손금 소급공제 환급 (법§72, 영§110) — 당기 결손 시"):
+        st.caption(
+            "당기 결손금이 발생한 **중소기업**은 직전 사업연도 법인세를 소급하여 환급받을 수 있습니다(법§72). "
+            "환급세액 = 직전 산출세액 − (직전 과세표준 − 소급공제 결손금) × 직전 세율, "
+            "한도는 직전 산출세액 − 직전 공제·감면세액(영§110①). "
+            "**당기 결손금은 5단계에서 자동 산정**되며, 아래는 직전 사업연도 신고서 값만 입력합니다."
+        )
+        mi.loss_carryback_enabled = st.checkbox(
+            "결손금 소급공제 환급을 검토한다 (당기 결손 + 중소기업)",
+            value=mi.loss_carryback_enabled,
+        )
+        if mi.loss_carryback_enabled:
+            mi.loss_carryback_both_filed = st.checkbox(
+                "당기·직전 사업연도 모두 기한내 신고했다 (법§72④ 요건)",
+                value=mi.loss_carryback_both_filed,
+            )
+            clc1, clc2 = st.columns(2)
+            mi.loss_carryback_prior_tax_base = int(clc1.number_input(
+                "직전 사업연도 과세표준 (원)", min_value=0, step=1_000_000,
+                value=int(mi.loss_carryback_prior_tax_base),
+                help="직전연도 법인세 신고서(과세표준및세액조정계산서)의 과세표준",
+            ))
+            mi.loss_carryback_prior_gross_tax = int(clc2.number_input(
+                "직전 사업연도 산출세액 (원)", min_value=0, step=1_000_000,
+                value=int(mi.loss_carryback_prior_gross_tax),
+                help="§55의2 토지등 양도소득에 대한 법인세는 제외한 산출세액 (법§72①1호)",
+            ))
+            mi.loss_carryback_prior_credit = int(st.number_input(
+                "직전 사업연도 공제·감면세액 (원)", min_value=0, step=1_000_000,
+                value=int(mi.loss_carryback_prior_credit),
+                help="한도(직전 법인세액 = 산출세액 − 공제·감면세액, 영§110①) 산정용. "
+                     "가산세는 포함하지 않습니다.",
+            ))
+            mi.loss_carryback_requested_loss = int(st.number_input(
+                "신청 소급공제 결손금 (원, 0이면 상한 전액)", min_value=0, step=1_000_000,
+                value=int(mi.loss_carryback_requested_loss),
+                help="소급공제를 신청할 결손금. 0이면 상한(min[당기결손금, 직전 과표]) 전액을 적용합니다. "
+                     "일부만 신청하면 잔여 결손금은 이월공제(법§13①1호) 대상으로 남습니다.",
+            ))
+            mi.loss_carryback_step2_override = int(st.number_input(
+                "직전 세율 2호 직접 입력 (원, 직전연도 2022 이하일 때만)", min_value=0, step=1_000_000,
+                value=int(mi.loss_carryback_step2_override),
+                help="엔진 세율테이블은 2023년 이후만 수록 — 직전 사업연도가 2022년 이하이면 "
+                     "(직전 과표 − 소급공제 결손금) × 직전 세율을 직접 계산해 입력하세요. 0이면 미입력.",
+            ))
+            st.caption(
+                "⚠ 추징 주의(법§72⑤): 추후 결손금 경정 감소·직전 경정·중소기업 탈락 시 "
+                "환급세액 + 이자상당액(1일 10만분의 22, 영§110④)이 징수됩니다. "
+                "환급 신청 여부·금액은 회계사·납세자가 확정합니다. 환급가능세액 초안은 5단계에서 산출됩니다."
+            )
+
+    with st.expander("➕ 세무조정 직접 입력 (규칙엔진 미포착 항목 수동 가감)"):
+        st.caption(
+            "규칙엔진이 자동 계산하지 못한 세무조정을 회계사가 직접 추가합니다. "
+            "입력한 항목은 **소득금액조정합계표(별지15호)**에 가산/차감으로 반영되고 "
+            "각사업연도소득·과세표준에 합산됩니다. **유보/△유보로 처분하면 자본금과적립금조정명세서(을)에 "
+            "자동 반영**되어 차기로 승계됩니다. 금액·소득처분·근거는 회계사가 확정합니다."
+        )
+        _CAT_OPTS = ["익금산입", "손금불산입", "손금산입", "익금불산입"]
+        # 조정구분에 맞는 소득처분만 노출 (사외유출은 가산에만 성립, 차감은 △유보·기타)
+        _DISP_ADD = ["유보", "상여", "배당", "기타사외유출", "기타", "검토필요"]
+        _DISP_DED = ["△유보", "기타", "검토필요"]
+        _existing_ca = mi.custom_adjustments or []
+        _n_ca = st.number_input(
+            "직접 입력할 세무조정 항목 수", min_value=0, max_value=30,
+            value=len(_existing_ca), step=1, key="custom_adj_count",
+        )
+        _rows_ca: list[dict] = []
+        for i in range(int(_n_ca)):
+            _ex = _existing_ca[i] if i < len(_existing_ca) else {}
+            st.markdown(f"**항목 {i+1}**")
+            c1, c2 = st.columns([3, 2])
+            _name = c1.text_input(
+                "항목명", value=str(_ex.get("name", "")), key=f"custom_adj_name_{i}",
+                placeholder="예: 임대료 귀속시기 차이 익금산입",
+            )
+            _cat = c2.selectbox(
+                "조정구분", _CAT_OPTS,
+                index=_CAT_OPTS.index(_ex["category"]) if _ex.get("category") in _CAT_OPTS else 0,
+                key=f"custom_adj_cat_{i}",
+            )
+            c3, c4 = st.columns([2, 2])
+            _amt = c3.number_input(
+                "금액(원)", min_value=0, step=1_000_000,
+                value=int(_ex.get("amount", 0)), key=f"custom_adj_amt_{i}",
+                help="차감은 금액을 음수로 넣지 말고 조정구분(손금산입/익금불산입)으로 선택하세요.",
+            )
+            _disp_opts = _DISP_ADD if _cat in ("익금산입", "손금불산입") else _DISP_DED
+            _disp = c4.selectbox(
+                "소득처분", _disp_opts,
+                index=_disp_opts.index(_ex["disposition"]) if _ex.get("disposition") in _disp_opts else 0,
+                key=f"custom_adj_disp_{i}",
+            )
+            _basis = st.text_input(
+                "근거(법령·사유)", value=str(_ex.get("basis", "")), key=f"custom_adj_basis_{i}",
+                placeholder="예: 법§40 권리의무확정주의 — 당기 귀속 임대료",
+            )
+            if _name.strip() and _amt:
+                _rows_ca.append({
+                    "name": _name.strip(), "amount": int(_amt), "category": _cat,
+                    "disposition": _disp, "basis": _basis.strip(),
+                })
+            if i < int(_n_ca) - 1:
+                st.divider()
+        mi.custom_adjustments = _rows_ca
+        if _rows_ca:
+            _add_sum = sum(x["amount"] for x in _rows_ca if x["category"] in ("익금산입", "손금불산입"))
+            _ded_sum = sum(x["amount"] for x in _rows_ca if x["category"] in ("손금산입", "익금불산입"))
+            st.markdown(
+                f"→ 직접 입력 합계: **가산 {_add_sum:,}원** · **차감 {_ded_sum:,}원** "
+                f"(순효과 {_add_sum - _ded_sum:+,}원 — 각사업연도소득에 반영)"
+            )
+            st.caption("⚠ 직접 입력 항목은 규칙엔진·법령 검증을 거치지 않습니다 — 금액·소득처분·근거의 정확성은 회계사 책임입니다.")
+
     with st.expander("부당행위계산 부인 (법§52, 영§88) — 특수관계인 거래 검토"):
         st.caption(
             "고가매입·저가양도·자산 무상이전 등은 시가 비교가 필요해 자동 계산하지 않습니다 "
@@ -1516,61 +1854,87 @@ def render_adjustment_data(
             "주식 취득가액을 초과하면 의제배당으로 익금산입(법§16①). 무상증자(2호)는 취득가액 차감 "
             "없이 전액, 상법§459① 자본준비금·재평가적립금 자본전입은 제외."
         )
-        _dd_cands = [
+        st.caption(
+            "후보는 ① 적요에 감자·소각·합병·분할·잔여재산 등이 있는 분개 ② **투자주식 계정(매도가능증권·"
+            "관계기업투자주식 등)의 대변(처분·감소) 분개**에서 추출합니다. ⚠ **무상주 수령(2호)·미인식 감자**는 "
+            "회계상 분개가 없을 수 있어 자동 후보로 안 잡힙니다 — 주식변동·배당통지로 직접 확인해 카드를 추가하세요."
+        )
+        _DD_INV_ACCTS = ("매도가능증권", "관계기업투자", "투자주식", "지분법적용투자",
+                         "단기매매증권", "당기손익인식금융자산", "기타포괄손익")
+        # 후보 300건에서 조기종료 — 49k 전건 순회 회피(islice generator)
+        _dd_cands = list(islice((
             f"{str(ln.date)} · {ln.account_name} · {ln.description[:20]} · "
             f"{(ln.debit or ln.credit):,}원"
             for ln in (journals or [])
-            if any(k in (ln.description or "") for k in ("유상감자", "무상주", "잉여금", "감자", "합병", "분할"))
-        ]
-        _render_review_line_cards(mi, deemed_dividend_spec(), _dd_cands[:300])
+            if any(k in (ln.description or "")
+                   for k in ("유상감자", "무상주", "잉여금", "감자", "소각", "합병", "분할",
+                             "청산", "잔여재산", "자본전입"))
+            or (any(a in (ln.account_name or "") for a in _DD_INV_ACCTS) and (ln.credit or 0) > 0)
+        ), 300))
+        _render_review_line_cards(mi, deemed_dividend_spec(), _dd_cands)
 
     with st.expander("세액공제·감면 / 가산세 / 기납부세액 (법§55~64·73, 조특법)"):
         st.caption(
-            "산출세액 이후 차감 항목입니다. 세액공제·감면은 항목별로 **최저한세 적용 대상 여부**를 "
-            "지정하세요 (조특§132). 최저한세 적용대상 감면은 최저한세에 미달하는 만큼 배제됩니다. "
-            "금액 산식은 항목별 한도 계산이 필요해 자동화하지 않고 수기 입력으로 받습니다."
+            "산출세액 이후 차감 항목입니다. 항목명에 **조특§7·§24·§10·§29의7**을 적으면 해당 "
+            "**산식 입력칸**이 나타나 회계사가 인자(투자액·율·산출세액 등)만 입력하면 공제·감면액이 "
+            "자동 산출됩니다. 최저한세·농특세 적용 여부는 카탈로그 분류로 자동 제시되며 체크로 확정합니다 "
+            "(조특§132·농특세법§4). 율·요건 충족은 회계사 최종 확인."
         )
         _n_credit = int(st.number_input(
             "세액공제·감면 항목 수", min_value=0, max_value=20,
             value=len(mi.tax_credit_items), step=1,
         ))
+        _company = getattr(st.session_state.get("project", None), "company", None)
         _credits: list[dict] = []
         for _i in range(_n_credit):
             _prev = mi.tax_credit_items[_i] if _i < len(mi.tax_credit_items) else {}
-            cc1, cc2, cc3, cc4 = st.columns([3, 2, 2, 2])
-            _nm = cc1.text_input(
+            _nm = st.text_input(
                 f"항목명 #{_i + 1}", value=str(_prev.get("name", "")),
                 key=f"tc_name_{_i}",
-                placeholder="예: 통합투자세액공제(조특§24)·R&D세액공제(조특§10)·중소기업특별감면(조특§7)",
-            )
-            _amt = int(cc2.number_input(
-                f"공제·감면액 #{_i + 1} (원)", min_value=0,
-                value=int(_prev.get("amount", 0) or 0), step=100_000, key=f"tc_amt_{_i}",
-            ))
-            _smt = cc3.checkbox(
-                f"최저한세 적용 #{_i + 1}", value=bool(_prev.get("subject_to_min_tax", True)),
-                key=f"tc_smt_{_i}",
-                help="조특§132 최저한세 적용대상이면 체크 (대부분의 조특 감면·투자세액공제). "
-                     "R&D세액공제 등 일부는 미적용 — 해당 시 체크 해제",
+                placeholder="예: 통합투자세액공제(조특§24)·R&D세액공제(조특§10)·중소기업특별감면(조특§7)·고용증대(조특§29의7)",
             )
             _spec = lookup_credit_spec(_nm) if _nm else None
+            _ftype = credit_formula_type(_nm)
+            # 산식 매칭 항목 → 산식 입력칸으로 자동 산출(회계사는 인자만 입력). 미매칭 → 금액 직접 입력.
+            if _ftype:
+                _amt, _formula = render_credit_formula(_ftype, _prev.get("formula", {}), _company, _i)
+            else:
+                _amt = int(st.number_input(
+                    f"공제·감면액 #{_i + 1} (원)", min_value=0,
+                    value=int(_prev.get("amount", 0) or 0), step=100_000, key=f"tc_amt_{_i}",
+                    help="항목명에 조특§7·24·10·29의7을 적으면 산식 입력칸이 나타나 자동 산출됩니다.",
+                ))
+                _formula = {}
             if _spec:
                 st.caption(
                     f"📑 **{_spec.article}** 추천 분류 — 최저한세 "
                     f"**{'적용' if _spec.subject_to_min_tax else '미적용'}** · 농특세 "
                     f"**{'과세' if _spec.farm_surtax_taxable else '비과세'}** "
-                    f"({_spec.note}) — 체크박스로 최종 확정"
+                    f"({_spec.note}) — 아래 체크박스로 최종 확정"
                 )
+            cc3, cc4 = st.columns(2)
+            # 최저한세·농특세 기본값을 카탈로그 추천 분류에서 자동 제시 (요건 자동검토)
+            _smt = cc3.checkbox(
+                f"최저한세 적용 #{_i + 1}",
+                value=bool(_prev.get("subject_to_min_tax",
+                                     _spec.subject_to_min_tax if _spec else True)),
+                key=f"tc_smt_{_i}",
+                help="조특§132 최저한세 적용대상이면 체크. 중소기업 R&D세액공제 등은 미적용 — 해제",
+            )
             _fst = cc4.checkbox(
-                f"농특세 과세 #{_i + 1}", value=bool(_prev.get("farm_surtax_taxable", False)),
+                f"농특세 과세 #{_i + 1}",
+                value=bool(_prev.get("farm_surtax_taxable",
+                                     _spec.farm_surtax_taxable if _spec else False)),
                 key=f"tc_fst_{_i}",
-                help="농어촌특별세 과세대상이면 체크 (감면세액×20%, 농특세법§5①). "
-                     "조특§6·§7 중소기업 세액감면·특별세액감면, R&D세액공제 등은 비과세(농특세법§4) — 체크 해제",
+                help="농어촌특별세 과세대상이면 체크(감면세액×20%, 농특세법§5①). "
+                     "조특§7 중소기업 특별감면·R&D는 비과세(농특세법§4) — 해제",
             )
             _credits.append({
-                "name": _nm, "amount": _amt,
+                "name": _nm, "amount": _amt, "formula": _formula,
                 "subject_to_min_tax": _smt, "farm_surtax_taxable": _fst,
             })
+            if _i < _n_credit - 1:
+                st.divider()
         mi.tax_credit_items = _credits
 
         cga, cgb = st.columns(2)
@@ -1595,6 +1959,11 @@ def render_adjustment_data(
             _lp_tax = int(st.number_input("미납·과소납부세액 (원)", min_value=0, value=0, step=100_000, key="sx_lp"))
             _lp_days = int(st.number_input("미납 일수", min_value=0, value=0, step=1, key="sx_days"))
             _other = int(st.number_input("기타 가산세 (법§75 계열 수기 합산, 원)", min_value=0, value=0, step=100_000, key="sx_other"))
+            if _nf_tax > 0 and _ur_tax > 0:
+                st.warning(
+                    "무신고와 과소신고는 동시 적용되지 않습니다 (무신고면 과소신고 없음). "
+                    "둘 다 입력하면 합산되어 과대 산정되니 해당하는 하나만 입력하세요."
+                )
             _sr = aggregate_surtax(
                 no_filing_tax=_nf_tax, no_filing_fraud=_nf_fraud, no_filing_offshore=_nf_off,
                 revenue=_nf_rev,
@@ -1633,7 +2002,9 @@ def render_adjustment_data(
         )
         mi.land_transfer_unregistered = clt3.checkbox(
             "미등기", value=mi.land_transfer_unregistered,
-            help="미등기 양도 — 비사업용토지·주택별장은 40% 적용 (법§55의2① 2·3호)",
+            help="미등기 양도 — 비사업용토지·주택별장은 40% 적용 (법§55의2① 2·3호). "
+                 "단 장기할부·법령상 등기불능 등 영§92의2④ 미등기 제외사유에 해당하면 미등기로 보지 "
+                 "않으니 체크 해제 (회계사 판단).",
         )
         if mi.land_transfer_income:
             _lt_rate = {"비사업용토지": (0.10, 0.40), "주택별장": (0.20, 0.40),

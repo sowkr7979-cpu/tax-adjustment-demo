@@ -20,6 +20,64 @@ def _row(rows, code):
     return next(x for x in rows if x["과목"] == code)
 
 
+def test_custom_yubo_absorbed_into_reserve():
+    """수기 직접 입력 세무조정 중 유보/△유보가 을표 증가행으로 자동 반영."""
+    r = _r(custom_adjustment_lines=[
+        {"name": "임대료 귀속 익금산입", "amount": 5_000_000, "category": "익금산입",
+         "disposition": "유보", "basis": "법§40"},
+        {"name": "전기오류 손금산입", "amount": 2_000_000, "category": "손금산입",
+         "disposition": "△유보", "basis": "법§40"},
+        {"name": "사외유출 항목", "amount": 9_000_000, "category": "손금불산입",
+         "disposition": "기타사외유출", "basis": "수기"},   # 유보 아님 → 을표 제외
+    ])
+    rows = build_reserve_status([], r)
+    yubo = _row(rows, "[수기] 임대료 귀속 익금산입")
+    assert yubo["증가"] == 5_000_000 and yubo["기말"] == 5_000_000 and yubo["처분"] == "유보"
+    minus = _row(rows, "[수기] 전기오류 손금산입")
+    assert minus["증가"] == 2_000_000 and minus["처분"] == "△유보"
+    assert all("사외유출 항목" not in x["과목"] for x in rows)
+
+
+def test_deemed_dividend_bonus_yubo_absorbed_into_reserve():
+    """의제배당 무상증자(유보)는 을표 증가행으로 반영, 기타 처분분(감자 등)은 제외."""
+    r = _r(deemed_dividend_lines=[
+        {"amount": 30_000_000, "disposition": "유보", "basis": "법§16①", "ref": ""},
+        {"amount": 7_000_000, "disposition": "유보", "basis": "법§16①", "ref": ""},
+        {"amount": 9_000_000, "disposition": "기타", "basis": "법§16①", "ref": ""},  # 감자 등 → 제외
+    ])
+    rows = build_reserve_status([], r)
+    yubo = _row(rows, "의제배당(자본전입형) 유보")
+    assert yubo["증가"] == 37_000_000 and yubo["기말"] == 37_000_000 and yubo["처분"] == "유보"
+    # 기타 처분분은 을표에 들어가지 않음
+    assert reserve_totals(rows)["유보_기말"] >= 37_000_000
+
+
+def test_deemed_dividend_yubo_carries_prior_opening():
+    """전기 의제배당(자본전입형) 유보가 opening으로 오면 기초 이월 + 당기 증가 누적.
+
+    calc.py가 차기 승계(_new_reserves)에 동일 코드로 실어야 이 연속성이 성립 — 추인 추적 단절 방지.
+    """
+    r = _r(deemed_dividend_lines=[
+        {"amount": 10_000_000, "disposition": "유보", "basis": "법§16①", "ref": ""},
+    ])
+    opening = [{"code": "의제배당(자본전입형) 유보", "amount": 30_000_000, "disposition": "유보"}]
+    rows = build_reserve_status(opening, r)
+    row = _row(rows, "의제배당(자본전입형) 유보")
+    assert row["기초"] == 30_000_000 and row["증가"] == 10_000_000 and row["기말"] == 40_000_000
+
+
+def test_custom_yubo_carries_prior_opening():
+    """전기 [수기] 유보가 opening으로 오면 기초로 이월되고 당기 증가 누적."""
+    r = _r(custom_adjustment_lines=[
+        {"name": "임대료 귀속 익금산입", "amount": 3_000_000, "category": "익금산입",
+         "disposition": "유보", "basis": "법§40"},
+    ])
+    prior = [{"code": "[수기] 임대료 귀속 익금산입", "amount": 5_000_000, "disposition": "유보"}]
+    rows = build_reserve_status(prior, r)
+    row = _row(rows, "[수기] 임대료 귀속 익금산입")
+    assert row["기초"] == 5_000_000 and row["증가"] == 3_000_000 and row["기말"] == 8_000_000
+
+
 def test_depreciation_reconciles_to_denial_end():
     """감가상각 부인누계 기말 = 엔진 denial_end, 기초 역산."""
     rows = build_reserve_status(

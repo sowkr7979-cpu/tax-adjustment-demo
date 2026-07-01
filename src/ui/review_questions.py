@@ -7,7 +7,7 @@
 (streamlit 비의존 — 단위 테스트 가능).
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 # 입력 단위 — 항목 성격에 따라 다름 (KICPA 리뷰 반영)

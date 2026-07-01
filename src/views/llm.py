@@ -8,7 +8,7 @@ import streamlit as st
 
 from src.parsers.smart_a import SmartALoader
 from src.rules.classifier import classify_all
-from src.llm.ollama_client import OllamaClient
+from src.llm.anthropic_client import AnthropicClient
 from src.llm.analyzer import JournalAnalyzer
 from src.ui.styles import page_header, section_title, info_card, striped_by_group
 from src.utils.models import issue_label
@@ -27,7 +27,7 @@ def render(proj, llm_ok: bool) -> None:
 
     if not loader.journals:
         st.markdown(info_card(
-            "<b style='color:#0071e3;'>안내</b> &nbsp; 먼저 2단계에서 분개장 파일을 업로드하세요."
+            "<b style='color:#1a73e8;'>안내</b> &nbsp; 먼저 2단계에서 분개장 파일을 업로드하세요."
         ), unsafe_allow_html=True)
         st.stop()
 
@@ -142,13 +142,13 @@ def render(proj, llm_ok: bool) -> None:
 
     st.markdown(section_title(
         "2단계 — 선택 거래 메모 보조",
-        "Ollama 로컬 LLM으로 회계사가 고른 소수 검토 큐만 요약·메모화합니다.",
+        "Claude API로 회계사가 고른 소수 검토 큐만 요약·메모화합니다 (배포 데모 — 더미 데이터 전용).",
     ), unsafe_allow_html=True)
 
     if not llm_ok:
         st.markdown(info_card(
-            "<b style='color:#ff3b30;'>Ollama 오프라인</b> &nbsp; "
-            "터미널에서 <code>ollama serve</code>를 실행한 뒤 다시 시도하세요."
+            "<b style='color:#ef4146;'>Claude API 키 미설정</b> &nbsp; "
+            "배포 환경의 Secrets(또는 <code>ANTHROPIC_API_KEY</code> 환경변수)에 키를 넣은 뒤 다시 시도하세요."
         ), unsafe_allow_html=True)
 
     _job = st.session_state.get("llm_job")
@@ -173,15 +173,15 @@ def render(proj, llm_ok: bool) -> None:
         )
         _selected_issues = set(_picked)
         _sel_cnt = sum(_stage2_by_issue[c] for c in _picked)
-        _est_min = _sel_cnt  # CPU 추론 실측 약 1건/분
-        _too_many = _sel_cnt > 50
+        _est_sec = max(_sel_cnt * 3, 3)  # Claude API 배치 추론 실측 약 3초/건 이내
+        _too_many = _sel_cnt > 30  # 공개 데모 API 비용 보호
         st.caption(
-            f"선택된 분석 대상 **{_sel_cnt:,}건** · 예상 소요 약 {_est_min // 60}시간 {_est_min % 60}분 "
-            f"(gemma4 CPU 기준 1건당 약 1분, 권장 50건 이하)"
+            f"선택된 분석 대상 **{_sel_cnt:,}건** · 예상 소요 약 {_est_sec // 60}분 {_est_sec % 60}초 "
+            f"(Claude API 기준, 데모 권장 30건 이하)"
         )
         if _too_many:
             st.warning(
-                "선택 대상이 50건을 초과합니다. 로컬 LLM은 대량 분석에 부적합하므로 "
+                "선택 대상이 30건을 초과합니다. 공개 데모는 API 비용 보호를 위해 "
                 "금액 상위 거래나 특정 이슈만 좁혀서 실행하세요."
             )
     else:
@@ -202,7 +202,7 @@ def render(proj, llm_ok: bool) -> None:
     if run_llm:
         fy_end_val = _parse_stored_date(proj.company.fiscal_year_end, date.today())
         analyzer = JournalAnalyzer(
-            client=OllamaClient(),
+            client=AnthropicClient(),
             fiscal_year_end=fy_end_val,
             company_name=proj.company.name,
             is_sme=proj.company.is_sme,

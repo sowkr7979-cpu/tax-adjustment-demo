@@ -95,6 +95,32 @@ def build_reserve_status(
         base = opening.get(code, (0, disp))[0]
         _add(code, base, amt, 0, disp, False)
 
+    # 회계사 직접 입력 세무조정 중 유보/△유보 — 을표 증가행으로 자동 반영 (차기 추인 추적)
+    #   tax_result에 custom_adjustment_lines가 실려 오므로 별도 인자 없이 흡수한다.
+    for _c in (getattr(r, "custom_adjustment_lines", None) or []):
+        _cdisp = str(_c.get("disposition", "")).strip()
+        if _cdisp not in ("유보", "△유보"):
+            continue
+        _ccode = f"[수기] {str(_c.get('name', '')).strip()}"
+        _camt = int(_c.get("amount", 0) or 0)
+        if not _camt:
+            continue
+        _cbase = opening.get(_ccode, (0, _cdisp))[0]
+        _add(_ccode, _cbase, _camt, 0, _cdisp, False)
+
+    # 의제배당 무상증자·자본전입형(법§16①2호·3호) — 교부주식 세무상 취득가액 증가분은 유보.
+    #   차기 주식 양도 시 추인되므로 을표 증가행으로 반영(차기 추적). 기타 처분분(감자·합병 등)은 제외.
+    #   과목명은 2호(무상증자)·3호(자기주식 재배정)를 함께 담으므로 '자본전입형'으로 일반화.
+    _dd_yubo = sum(
+        int(_d.get("amount", 0) or 0)
+        for _d in (getattr(r, "deemed_dividend_lines", None) or [])
+        if str(_d.get("disposition", "")).strip() == "유보"
+    )
+    if _dd_yubo:
+        _ddcode = "의제배당(자본전입형) 유보"
+        _ddbase = opening.get(_ddcode, (0, "유보"))[0]
+        _add(_ddcode, _ddbase, _dd_yubo, 0, "유보", False)
+
     # 스펙에 없는 전기 유보(수동 입력 등) — 기초만 이월, 추인 검토 필요
     for code, (base, disp) in opening.items():
         if code not in used and base:

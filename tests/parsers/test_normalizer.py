@@ -108,6 +108,50 @@ def test_real_xlsx_unaffected(tmp_path):
     assert "계정명" in df.columns
 
 
+def test_malformed_xlsx_bad_xf_count(tmp_path):
+    """비표준 styles.xml(<xf>에 count 속성) — openpyxl 실패 시 정정 후 복구 읽기.
+
+    일부 회계 프로그램 내보내기가 OOXML 스펙을 어겨 `<xf>` 요소에 `count` 속성을
+    붙인다. openpyxl CellStyle 파서가 거부하므로 styles.xml을 정정해 복구해야 한다.
+    """
+    import io
+    import re
+    import zipfile
+
+    import pandas as pd
+
+    p = tmp_path / "journal.xlsx"
+    pd.DataFrame({
+        "날짜": ["2025-04-01"], "전표번호": ["00001"], "계정코드": ["255"],
+        "계정명": ["부가세예수금"], "차변": ["3,904,780"], "대변": ["0"],
+    }).to_excel(p, index=False)
+
+    # styles.xml의 cellStyleXfs 내부 <xf>에 잘못된 count 속성을 주입해 파일을 깨뜨린다
+    with zipfile.ZipFile(p) as src:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
+            for item in src.infolist():
+                data = src.read(item.filename)
+                if item.filename == "xl/styles.xml":
+                    text = data.decode("utf-8")
+                    text = re.sub(r"<cellStyleXfs([^>]*)><xf",
+                                  '<cellStyleXfs\\1><xf count="1"', text, count=1)
+                    data = text.encode("utf-8")
+                out.writestr(item, data)
+        p.write_bytes(buf.getvalue())
+
+    # 표준 openpyxl 읽기는 실패해야 한다 (재현 검증)
+    with pytest.raises(Exception):
+        pd.read_excel(p, engine="openpyxl")
+
+    df, meta = read_any_table(p)
+    assert meta["format"] == "xlsx"
+    assert "sanitized" in str(meta["encoding"])
+    assert meta["rows"] == 1
+    assert "계정명" in df.columns
+    assert df.iloc[0]["계정명"] == "부가세예수금"
+
+
 def test_title_rows_above_header_xlsx(tmp_path):
     """진짜 Excel인데 제목·회사명 행이 헤더 위에 있는 경우 — 헤더 재탐지."""
     import pandas as pd

@@ -25,6 +25,50 @@ def _ded(rows, name):
     return [x for x in rows[1] if x[1] == name]
 
 
+def test_custom_adjustment_totals():
+    """수기 직접 입력 세무조정이 total_add_back/deduct에 가산/차감으로 반영."""
+    r = _r(custom_adjustment_lines=[
+        {"name": "임대료 귀속 익금산입", "amount": 5_000_000, "category": "익금산입",
+         "disposition": "유보", "basis": "법§40"},
+        {"name": "전기오류 손금산입", "amount": 2_000_000, "category": "손금산입",
+         "disposition": "△유보", "basis": "법§40"},
+        {"name": "비용 손금불산입", "amount": 1_000_000, "category": "손금불산입",
+         "disposition": "기타사외유출", "basis": "수기"},
+    ])
+    assert r.custom_add_back == 6_000_000      # 익금산입 5M + 손금불산입 1M
+    assert r.custom_deduct == 2_000_000        # 손금산입 2M
+    assert r.total_add_back == 6_000_000       # 다른 항목 0
+    assert r.total_deduct == 2_000_000
+
+
+def test_custom_adjustment_rows_split():
+    """수기 조정이 가산/차감 행으로 분배되고 [수기] 라벨·근거·처분 유지."""
+    r = _r(custom_adjustment_lines=[
+        {"name": "임대료 귀속 익금산입", "amount": 5_000_000, "category": "익금산입",
+         "disposition": "유보", "basis": "법§40"},
+        {"name": "전기오류 손금산입", "amount": 2_000_000, "category": "손금산입",
+         "disposition": "△유보", "basis": "법§40"},
+    ])
+    add, ded = adjustment_rows(r)
+    a = _add((add, ded), "[수기] 임대료 귀속 익금산입")
+    d = _ded((add, ded), "[수기] 전기오류 손금산입")
+    assert len(a) == 1 and a[0][0] == "익금산입" and a[0][2] == 5_000_000
+    assert a[0][3] == "법§40" and a[0][4] == "유보"
+    assert len(d) == 1 and d[0][0] == "손금산입" and d[0][2] == 2_000_000
+
+
+def test_custom_adjustment_unknown_category_surfaced():
+    """알 수 없는 조정구분은 조용히 누락하지 않고 '검토필요' 행으로 노출(회계사 확인)."""
+    r = _r(custom_adjustment_lines=[
+        {"name": "분류 미상 항목", "amount": 3_000_000, "category": "엉뚱한구분",
+         "disposition": "검토필요", "basis": "수기"},
+    ])
+    add, ded = adjustment_rows(r)
+    row = _add((add, ded), "[수기] 분류 미상 항목")
+    assert len(row) == 1 and row[0][0] == "검토필요" and row[0][2] == 3_000_000
+    assert "검토필요" in row[0][4]   # 처분에 미상 구분 안내
+
+
 def test_legacy_single_deemed_interest_row():
     """choices 미전달(레거시) → 인정이자 단일 행, 기존 라벨 유지."""
     r = _r(deemed_interest=12_000_000,

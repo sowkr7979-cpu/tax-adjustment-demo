@@ -1,5 +1,5 @@
 """기부금 한도 계산 — 법인세법 제24조 (이월분 우선공제 포함, 법§24⑤⑥)."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

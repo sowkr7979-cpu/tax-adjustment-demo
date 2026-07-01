@@ -81,7 +81,9 @@ def yoy_table(income_df, prev_income_df=None) -> "pd.DataFrame | None":
         axis=1,
     )
     out.attrs["prev_source"] = prev_src
-    return out.sort_values("증감", key=lambda s: s.abs(), ascending=False).reset_index(drop=True)
+    # 손익계산서 양식(파싱) 순서를 그대로 유지 — 증감액 크기순으로 재정렬하지 않는다.
+    # (전기에만 있던 소멸 계정은 당기 계정 뒤에 이어진다.)
+    return out.reset_index(drop=True)
 
 
 def bs_opening_check(cur_bs, prev_bs, tolerance: int = 1000) -> "pd.DataFrame | None":

@@ -4,12 +4,88 @@ from datetime import date
 
 import streamlit as st
 
-from src.apis.dart_api import DartApiClient
+from src.apis.dart_api import DartApiClient, DART_CORP_POPUP
 from src.ui.sme_checker import render_sme_checker, ksic_to_industry
 from src.ui.styles import page_header, section_title, info_card
 from src.views.common import (
     _parse_stored_date, _fmt_bizr, _set_fiscal_year_from_acc_mt, _dart_preview,
 )
+
+
+def _render_audit_report_link(proj, dart: DartApiClient, has_dart_key: bool) -> None:
+    """비상장·최대주주현황 미제출 법인 → DART 감사보고서(주주현황·특수관계자 주석) 바로가기.
+
+    hyslrSttus 공시가 없어 DART 자동입력분이 0명인 경우 호출된다.
+    proj.company.corp_code가 있으면 최신 감사보고서를 찾아 문서 뷰어 링크를 만들고,
+    없으면(외부감사 비대상 등) 기업개황 화면으로 연결한다.
+    """
+    corp_code = (getattr(proj.company, "corp_code", "") or "").strip()
+
+    st.markdown(
+        '<div style="background:#fef7e0;border:1px solid #fde293;border-radius:12px;'
+        'padding:0.85rem 1.1rem;margin:0.5rem 0 0.5rem 0;font-size:14px;color:#3c4043;'
+        'line-height:1.55;">'
+        '비상장 등으로 <b>DART 최대주주현황</b>(정기보고서) 공시가 없는 법인은 '
+        '<b>감사보고서의 「주주현황」·「특수관계자 거래」 주석</b>에서 특수관계인을 확인합니다 '
+        '— 아래 버튼으로 해당 문서로 이동하세요.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not has_dart_key:
+        st.caption("DART_API_KEY가 설정되어야 감사보고서를 자동으로 찾을 수 있습니다.")
+        return
+    if not corp_code:
+        st.caption(
+            "감사보고서 자동 검색은 위 ① 회사 검색에서 **자동 입력**으로 법인을 "
+            "선택한 뒤 사용할 수 있습니다 (DART corp_code 필요)."
+        )
+        return
+
+    skey = f"_audit_report_{corp_code}"
+    if st.button(
+        "📄 DART 감사보고서 찾기",
+        help="이 법인의 최신 감사보고서를 DART에서 찾아 바로가기 링크를 만듭니다.",
+    ):
+        with st.spinner("DART에서 감사보고서 검색 중..."):
+            try:
+                st.session_state[skey] = {"ok": True, "report": dart.find_audit_report(corp_code)}
+            except Exception as e:   # noqa: BLE001 — 조회 실패는 자료 없음과 구분해 안내
+                st.session_state[skey] = {"ok": False, "error": str(e)}
+
+    res = st.session_state.get(skey)
+    if not res:
+        return
+
+    popup_url = DART_CORP_POPUP.format(corp_code=corp_code)
+    if not res["ok"]:
+        st.warning(
+            f"감사보고서 조회 실패 (DART 오류: {res['error']}) — "
+            "'자료 없음'이 아닙니다. 아래에서 DART를 직접 확인하세요."
+        )
+        st.link_button("DART 기업개황·공시목록 열기", popup_url)
+        return
+
+    rpt = res["report"]
+    if rpt is None:
+        st.info(
+            "DART에 이 법인의 감사보고서가 없습니다 (외부감사 비대상 추정) — "
+            "주주명부 기준으로 특수관계인을 아래 표에 직접 입력하세요."
+        )
+        st.link_button("DART 기업개황·공시목록 열기", popup_url)
+        return
+
+    _dt = rpt["rcept_dt"]
+    _dt_fmt = f"{_dt[:4]}.{_dt[4:6]}.{_dt[6:]}" if len(_dt) == 8 else _dt
+    st.success(f"최신 감사보고서: **{rpt['report_nm']}** ({_dt_fmt})")
+    st.link_button(
+        "📄 감사보고서 열기 — 주주현황·특수관계자 주석 확인",
+        rpt["url"],
+    )
+    st.caption(
+        "열린 문서 좌측 목차에서 「주주의 현황」 또는 주석의 「특수관계자와의 거래」를 "
+        "확인해 임원·친족·관계회사를 아래 표에 직접 추가하세요."
+    )
 
 
 def render(proj) -> None:
@@ -30,7 +106,7 @@ def render(proj) -> None:
 
     if not has_dart_key:
         st.markdown(info_card(
-            "<b style='color:#ff9500;'>DART_API_KEY 미설정</b> &nbsp; "
+            "<b style='color:#ea8600;'>DART_API_KEY 미설정</b> &nbsp; "
             "<code>.env</code> 파일에 <code>DART_API_KEY=...</code>를 추가하면 "
             "자동 검색을 사용할 수 있습니다. 아래에서 직접 입력도 가능합니다."
         ), unsafe_allow_html=True)
@@ -391,6 +467,14 @@ def render(proj) -> None:
             _nm, _rel = _parse_legacy(s)
             _details.append({"이름": _nm, "관계": _rel, "지분율(%)": "", "출처": "수기"})
 
+    # 주주현황(보유주식수·금액) 칸 — 구버전·DART 자동입력분에는 없으므로 기본키 보강
+    for _d in _details:
+        _d.setdefault("관계", "")
+        _d.setdefault("보유주식수", "")
+        _d.setdefault("금액(원)", "")
+        _d.setdefault("지분율(%)", "")
+        _d.setdefault("출처", "수기")
+
     _dart_n = sum(1 for d in _details if d.get("출처") == "DART")
     _man_n = len(_details) - _dart_n
 
@@ -409,14 +493,28 @@ def render(proj) -> None:
             "※ DART 자동 입력분 없음 (비상장·공시 없음·조회 실패 등) — 주주명부 기준으로 직접 입력하세요. "
             "DART 조회는 위 ① 회사정보에서 실행합니다."
         )
+        _render_audit_report_link(proj, dart, has_dart_key)
     if not _details:
         st.warning(
             "⚠ 특수관계인이 **0명**입니다 — 가지급금 인정이자(법§52)·부당행위 탐지에 필요하니 "
             "주주·임원·친족·관계회사를 입력하세요."
         )
 
-    # ── 표 편집 (이름·관계·지분율·출처) ──
-    _rp_df = pd.DataFrame(_details, columns=["이름", "관계", "지분율(%)", "출처"])
+    # 숫자 칸 파서 (콤마·공백·빈칸·NaN 허용) — 저장·미리보기 공용
+    def _to_int(v) -> int | None:
+        try:
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return None
+            s = str(v).replace(",", "").replace(" ", "").strip()
+            return int(float(s)) if s and s.lower() != "nan" else None
+        except (ValueError, TypeError):
+            return None
+
+    # ── 표 편집 (감사보고서 주주현황 형식: 이름·관계·보유주식수·금액·지분율·출처) ──
+    _cols = ["이름", "관계", "보유주식수", "금액(원)", "지분율(%)", "출처"]
+    _rp_df = pd.DataFrame(_details, columns=_cols)
+    _rp_df["보유주식수"] = pd.to_numeric(_rp_df["보유주식수"], errors="coerce")
+    _rp_df["금액(원)"] = pd.to_numeric(_rp_df["금액(원)"], errors="coerce")
     _edited = st.data_editor(
         _rp_df,
         num_rows="dynamic",
@@ -425,7 +523,17 @@ def render(proj) -> None:
         column_config={
             "이름": st.column_config.TextColumn("이름", required=True, width="medium"),
             "관계": st.column_config.TextColumn("관계", help="최대주주·대표이사·임원·친족·관계회사 등"),
-            "지분율(%)": st.column_config.TextColumn("지분율(%)", help="DART 자동입력분에 표시(보통주 기말 지분율)"),
+            "보유주식수": st.column_config.NumberColumn(
+                "보유주식수", min_value=0, step=1, format="%d",
+                help="감사보고서 주주현황의 보유주식수 — 입력 시 지분율이 자동 계산됩니다",
+            ),
+            "금액(원)": st.column_config.NumberColumn(
+                "금액(원)", min_value=0, step=1, format="%d",
+                help="주주현황의 금액 (주식 액면·평가액)",
+            ),
+            "지분율(%)": st.column_config.TextColumn(
+                "지분율(%)", help="직접 입력하거나, 보유주식수 입력 시 합계 대비 자동 계산됩니다",
+            ),
             "출처": st.column_config.SelectboxColumn(
                 "출처", options=["DART", "수기"], default="수기",
                 help="DART 주주현황 자동입력분과 직접 추가한 항목을 구분합니다",
@@ -433,17 +541,31 @@ def render(proj) -> None:
         },
         key="rp_editor",
     )
+    st.caption(
+        "감사보고서 「주주현황」을 그대로 옮길 수 있습니다 — 구분(이름)·보유주식수·금액·지분율. "
+        "보유주식수만 채우면 지분율은 합계 대비 자동 계산되어 아래 미리보기에 표시됩니다."
+    )
     if st.button("특수관계인 저장"):
-        _new_details, _new_names = [], []
+        _rows = []
         for _, _row in _edited.iterrows():
             _nm = str(_row.get("이름", "") or "").strip()
-            if not _nm:
-                continue
+            if _nm:
+                _rows.append((_nm, _row))
+        _total_sh = sum(s for s in (_to_int(r.get("보유주식수")) for _, r in _rows) if s)
+        _new_details, _new_names = [], []
+        for _nm, _row in _rows:
+            _sh  = _to_int(_row.get("보유주식수"))
+            _amt = _to_int(_row.get("금액(원)"))
+            _pct_in = str(_row.get("지분율(%)", "") or "").strip()
+            if not _pct_in and _sh and _total_sh:          # 보유주식수 → 지분율 자동 계산
+                _pct_in = f"{round(_sh / _total_sh * 100, 2):g}"
             _new_details.append({
-                "이름": _nm,
-                "관계": str(_row.get("관계", "") or "").strip(),
-                "지분율(%)": str(_row.get("지분율(%)", "") or "").strip(),
-                "출처": (str(_row.get("출처", "") or "").strip() or "수기"),
+                "이름":      _nm,
+                "관계":      str(_row.get("관계", "") or "").strip(),
+                "보유주식수": _sh if _sh is not None else "",
+                "금액(원)":   _amt if _amt is not None else "",
+                "지분율(%)": _pct_in,
+                "출처":      (str(_row.get("출처", "") or "").strip() or "수기"),
             })
             _new_names.append(_nm)   # 다운스트림(거래처명 부분일치)은 이름만 사용
         proj.manual_input.related_party_details = _new_details
@@ -463,14 +585,40 @@ def render(proj) -> None:
     _valid["이름"] = _valid["이름"].astype(str)
     _valid = _valid[
         _valid["이름"].str.strip().ne("") & _valid["이름"].str.strip().str.lower().ne("nan")
-    ]
+    ].reset_index(drop=True)
     if len(_valid) > 0:
-        _prev = _valid[["이름", "관계", "지분율(%)", "출처"]].reset_index(drop=True)
-        _pcts = [_pct(v) for v in _prev["지분율(%)"]]   # 리스트로 — None 보존(NaN 변환 방지)
+        _sh_list  = [_to_int(v) for v in _valid["보유주식수"]]
+        _amt_list = [_to_int(v) for v in _valid["금액(원)"]]
+        _total_sh = sum(s for s in _sh_list if s)
+        # 지분율: 입력값 우선, 없으면 보유주식수/합계로 도출 (None 보존 — NaN 변환 방지)
+        _pcts = []
+        for _i, _v in enumerate(_valid["지분율(%)"]):
+            _p = _pct(_v)
+            if _p is None and _sh_list[_i] and _total_sh:
+                _p = round(_sh_list[_i] / _total_sh * 100, 2)
+            _pcts.append(_p)
         _total = round(sum(p for p in _pcts if p is not None), 2)
+        _total_amt = sum(a for a in _amt_list if a)
         _n_ctrl = int(sum(1 for p in _pcts if p is not None and p > 30))
-        _sum_row = {"이름": "합계", "관계": "",
-                    "지분율(%)": (f"{_total:g}" if _total else ""), "출처": ""}
+
+        def _comma(n) -> str:
+            return f"{n:,}" if isinstance(n, int) and n else ""
+
+        _prev = pd.DataFrame({
+            "이름":      _valid["이름"].values,
+            "관계":      _valid["관계"].astype(str).replace("nan", "").values,
+            "보유주식수": [_comma(s) for s in _sh_list],
+            "금액(원)":   [_comma(a) for a in _amt_list],
+            "지분율(%)": [(f"{p:g}" if p is not None else "") for p in _pcts],
+            "출처":      _valid["출처"].astype(str).replace("nan", "").values,
+        })
+        _sum_row = {
+            "이름": "합계", "관계": "",
+            "보유주식수": _comma(_total_sh),
+            "금액(원)":   _comma(_total_amt),
+            "지분율(%)": (f"{_total:g}" if _total else ""),
+            "출처": "",
+        }
         _prev_disp = pd.concat([_prev, pd.DataFrame([_sum_row])], ignore_index=True)
         _last = len(_prev_disp) - 1
         _pct_col = list(_prev_disp.columns).index("지분율(%)")
@@ -495,6 +643,10 @@ def render(proj) -> None:
             use_container_width=True, hide_index=True,
         )
         _cap = f"지분율 합계 {_total:g}%"
+        if _total_sh:
+            _cap += f" · 보유주식수 합계 {_total_sh:,}주"
+        if _total_amt:
+            _cap += f" · 금액 합계 {_total_amt:,}원"
         if _n_ctrl:
             _cap += (f" · 🔴 30% 초과 지배주주 후보 {_n_ctrl}명 "
                      "(영§43⑦ 지배주주등·법§52 특수관계 판정 참고 — 회계사 확인)")
