@@ -147,8 +147,10 @@ def render(proj, llm_ok: bool) -> None:
 
     if not llm_ok:
         st.markdown(info_card(
-            "<b style='color:#ef4146;'>Claude API 키 미설정</b> &nbsp; "
-            "배포 환경의 Secrets(또는 <code>ANTHROPIC_API_KEY</code> 환경변수)에 키를 넣은 뒤 다시 시도하세요."
+            "<b style='color:#0d0d0d;'>AI 검토보조는 선택 기능입니다</b> &nbsp; "
+            "이 라이브 데모에서는 비활성 상태이며, 세무조정 계산(5단계)은 규칙엔진만으로 완결됩니다. "
+            "활성화하려면 <code>ANTHROPIC_API_KEY</code>를 Secrets/환경변수에 넣으세요. "
+            "설계상 AI는 금액을 확정하지 않고 검토메모·요약만 보조합니다(ADR-002)."
         ), unsafe_allow_html=True)
 
     _job = st.session_state.get("llm_job")

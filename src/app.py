@@ -100,8 +100,11 @@ with st.sidebar:
     proj = st.session_state.project
     llm_client = AnthropicClient()
     llm_ok = llm_client.is_available()
-    llm_color = "#10a37f" if llm_ok else "#ef4146"
-    llm_bg = "#ecfdf5" if llm_ok else "#fef2f2"
+    # 키가 없으면 '오류'가 아니라 '선택 기능 비활성'으로 중립 표시 (데모에서 정상 상태)
+    llm_color = "#10a37f" if llm_ok else "#8e8ea0"
+    llm_bg = "#ecfdf5" if llm_ok else "#f7f7f8"
+    _title = "Claude API 연결됨" if llm_ok else "AI 검토보조 · 선택 기능"
+    _sub = llm_client.model if llm_ok else "미연결 — 규칙엔진 계산은 정상 동작"
 
     st.markdown(f"""
     <div style="border-top:1px solid #ececf1; padding-top:1rem; margin-top:0.5rem;">
@@ -112,10 +115,8 @@ with st.sidebar:
         ">
             <div style="width:7px;height:7px;border-radius:50%;background:{llm_color};flex-shrink:0;"></div>
             <div>
-                <div style="font-size:13px;font-weight:600;color:#0d0d0d;line-height:1.2;">
-                    Claude API {"연결됨" if llm_ok else "키 미설정"}
-                </div>
-                <div style="font-size:11px;color:#6e6e80;margin-top:1px;">{llm_client.model}</div>
+                <div style="font-size:13px;font-weight:600;color:#0d0d0d;line-height:1.2;">{_title}</div>
+                <div style="font-size:11px;color:#6e6e80;margin-top:1px;">{_sub}</div>
             </div>
         </div>
     </div>
