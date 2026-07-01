@@ -140,7 +140,7 @@ def fig_architecture():
          *BOX_GRN, fs=9, bold=True)
     # 전수검토 (중)
     _box(ax, 37, 20, 26, 16,
-         "전수 검토\n법§13~55의2 · 33항목\n검토필요는 정직하게 표시",
+         "전수 검토\n법§13~55의2 · 38항목\n검토필요는 정직하게 표시",
          *BOX_GRN, fs=9, bold=True)
     # 산출 (우)
     _box(ax, 70, 20, 26, 16,
@@ -193,14 +193,14 @@ def fig_coverage():
                            gridspec_kw={"width_ratios": [1, 1.25]})
     # 도넛 — 자동계산 vs 검토필요
     a0 = ax[0]
-    vals = [8, 25]
-    labels = ["자동계산 8", "검토필요 25"]
+    vals = [13, 25]
+    labels = ["자동계산 13", "검토필요 25"]
     cols = ["#0f766e", "#e0b34a"]
     w, _, _ = a0.pie(vals, colors=cols, startangle=90,
                      wedgeprops=dict(width=0.42, edgecolor="white", linewidth=2),
-                     autopct=lambda p: f"{int(round(p*33/100))}", pctdistance=0.79,
+                     autopct=lambda p: f"{int(round(p*38/100))}", pctdistance=0.79,
                      textprops=dict(fontproperties=_KFONT_B, fontsize=11, color="white"))
-    a0.text(0, 0, "전수 검토\n33항목", ha="center", va="center",
+    a0.text(0, 0, "전수 검토\n38항목", ha="center", va="center",
             fontproperties=_KFONT_B, fontsize=11, color=NAVY)
     a0.legend(labels, loc="lower center", bbox_to_anchor=(0.5, -0.16), ncol=2,
               frameon=False, prop=_KFONT, fontsize=9)
@@ -398,6 +398,7 @@ def build():
             ["기업업무추진비", "기본한도+수입금액 적용률, 특수관계인 매출 10%, 특정법인 ×50%, 증빙불비", "법§25"],
             ["지급이자 4호", "(이자−1·3호) × [업무무관+가지급금 적수 ÷ 차입금 적수]", "법§28, 영§53"],
             ["인정이자", "거래상대방별 적수×이자율 − 약정이자 (상대방 간 통산 금지)", "법§52, 영§88③"],
+            ["부당행위계산부인", "시가 − 거래가액 이익분여액 (고가매입·저가양도 등, 3억·5% 기준)", "법§52, 영§88"],
             ["간주임대료", "주업·차입금 요건 충족 시 (보증금−건설비)적수×이자율−금융수익", "조특법§138"],
             ["과세표준·세액", "각사업연도소득−이월결손금 → 세율(개시일) → 최저한세 → 차감납부", "법§13~55"],
         ],
@@ -408,8 +409,8 @@ def build():
     h_section(pdf, "4. 신뢰성 — 법령 근거·전수 검토·감사추적")
     img(pdf, p_cov)
     body(pdf,
-         "법인세법 §13~55의2 전 조문 기준 33개 조정항목을 분개장과 대조해 자동계산/검토필요/해당없음으로 "
-         "표시합니다. 자동으로 계산하지 못한 25개 항목(의제배당·자본거래·합병분할·토지등 양도 등)은 "
+         "법인세법 §13~55의2 전 조문 기준 38개 조정항목을 분개장과 대조해 자동계산/검토필요/해당없음으로 "
+         "표시합니다. 자동으로 계산하지 못한 항목(의제배당·자본거래·합병분할·토지등 양도 등)은 "
          "숨기지 않고 '검토필요'로 정직하게 드러내며, 각 항목에 근거법령과 검토포인트 해석을 함께 붙입니다.")
     callout(
         pdf, "검증 가능성 · 재현성",

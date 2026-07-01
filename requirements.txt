@@ -1,11 +1,13 @@
-streamlit>=1.35.0
-pandas>=2.2.0
-openpyxl>=3.1.2
-xlrd>=2.0.1
-lxml>=5.0.0
-fpdf2>=2.8.0
-requests>=2.31.0
-python-dotenv>=1.0.0
-pydantic>=2.7.0
-anthropic>=0.49.0
-matplotlib>=3.8.0
+# 배포 재현성을 위해 로컬 검증 버전으로 고정한다.
+# (>= 로 두면 Streamlit Cloud가 최신 메이저로 드리프트 → 예: streamlit 1.58 흰 화면 회귀)
+streamlit==1.57.0
+pandas==3.0.2
+openpyxl==3.1.5
+xlrd==2.0.2
+lxml==6.1.1
+fpdf2==2.8.7
+requests==2.33.1
+python-dotenv==1.2.2
+pydantic==2.13.4
+anthropic==0.111.0
+matplotlib==3.11.0
