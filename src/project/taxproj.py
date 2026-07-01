@@ -110,6 +110,18 @@ class ManualInput:
     related_loan_parties: list[dict] = field(default_factory=list)  # [{name, opening, interest}]
     # 부당행위계산 부인 (법§52, 영§88) — 고가매입·저가양도 등 시가 비교는 수동 산정
     unfair_transaction_amount: int = 0     # (레거시 폴백) 분개 미매칭 시 총액 입력
+    # 주식매수선택권·주식기준보상 (조특법§13의2, 조특령§19)
+    stock_comp_booked_expense: int = 0
+    stock_comp_deductible_amount: int = 0
+    # 작업진행률 수익인식 (법인세법 시행령§69)
+    construction_book_revenue: int = 0
+    construction_tax_revenue: int = 0
+    # 자기주식처분손익 (법§15·§17)
+    treasury_stock_disposal_gain: int = 0
+    treasury_stock_disposal_loss: int = 0
+    # 고유목적사업준비금 (법§29)
+    proper_purpose_reserve_booked: int = 0
+    proper_purpose_reserve_limit: int = 0
     # 건별 질문형 수기입력 답 저장 — review_specs 항목키 → [건별 답 dict] (.taxproj 직렬화)
     #   예: review_answers["부당행위계산 부인"] = [{"type":"고가매입","market":..,"deal":..,"who":"주주","_ref":"J1|3"}]
     review_answers: dict = field(default_factory=dict)

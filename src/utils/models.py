@@ -192,12 +192,18 @@ class TaxAdjustmentResult:
     joint_expense_excess: int = 0        # 공동경비 분담 초과 (영§48)
     non_business_expense: int = 0        # 업무무관비용 (법§27)
     punitive_damages: int = 0            # 징벌적 손해배상금 (법§21의2)
+    stock_compensation_excess: int = 0    # 주식매수선택권·주식기준보상 비용 한도초과 (조특§13의2)
+    construction_revenue_add: int = 0     # 작업진행률 수익인식 익금산입 (영§69)
+    treasury_stock_loss_disallowed: int = 0  # 자기주식처분손실 손금불산입 (법§15·§17)
+    proper_purpose_reserve_excess: int = 0   # 고유목적사업준비금 한도초과 (법§29)
 
     # 익금산입
     deemed_interest: int = 0
     deemed_rental: int = 0
     deemed_dividend: int = 0             # 의제배당 (법§16① — 감자·해산·합병·무상증자 등)
     unfair_transaction: int = 0          # 부당행위계산 부인 (법§52, 영§88 — 고가매입·저가양도 등)
+    construction_revenue_excluded: int = 0  # 작업진행률 수익인식 익금불산입 (영§69)
+    treasury_stock_gain_excluded: int = 0   # 자기주식처분이익 익금불산입 (법§17)
     # 전기 △유보 당기 추인 익금산입 (회계사 명시 입력 — 감가상각·기부금이월 제외)
     prior_reserve_reversal_add: int = 0
 
@@ -218,6 +224,7 @@ class TaxAdjustmentResult:
     debt_relief_offset: int = 0
     refund_interest_excluded: int = 0    # 국세·지방세 과오납 환급금 이자 (법§18 4호 — 익금불산입)
     vat_output_excluded: int = 0         # 부가가치세 매출세액 (법§18 5호 — 익금불산입)
+    proper_purpose_reserve_deduction: int = 0  # 고유목적사업준비금 손금산입 (법§29)
 
     # 집계 (calc() 호출 후 채워짐)
     net_income: int = 0
@@ -279,6 +286,8 @@ class TaxAdjustmentResult:
             + self.securities_loss_disallowed + self.inventory_adjustment
             + self.welfare_disallowed + self.joint_expense_excess
             + self.non_business_expense + self.punitive_damages
+            + self.stock_compensation_excess + self.construction_revenue_add
+            + self.treasury_stock_loss_disallowed + self.proper_purpose_reserve_excess
             + self.deemed_interest + self.deemed_rental + self.deemed_dividend
             + self.unfair_transaction
             + self.prior_reserve_reversal_add
@@ -292,6 +301,8 @@ class TaxAdjustmentResult:
             + self.securities_gain_excluded + self.pension_deduction
             + self.debt_relief_offset
             + self.refund_interest_excluded + self.vat_output_excluded
+            + self.construction_revenue_excluded + self.treasury_stock_gain_excluded
+            + self.proper_purpose_reserve_deduction
             + self.prior_reserve_reversal_deduct
             + self.donation_carryforward_deduction
         )

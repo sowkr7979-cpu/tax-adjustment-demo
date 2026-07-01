@@ -58,6 +58,10 @@ def adjustment_rows(
         ("손금불산입", "공동경비 분담 초과",        r.joint_expense_excess,     "영§48",    "기타사외유출"),
         ("손금불산입", "업무무관비용",             r.non_business_expense,     "법§27",    "기타사외유출"),
         ("손금불산입", "징벌적 손해배상금",         r.punitive_damages,         "법§21의2", "기타사외유출"),
+        ("손금불산입", "주식매수선택권·주식기준보상 비용", r.stock_compensation_excess, "조특법§13의2", "기타사외유출"),
+        ("익금산입",   "작업진행률 수익인식",       r.construction_revenue_add, "영§69", "유보"),
+        ("손금불산입", "자기주식처분손실",          r.treasury_stock_loss_disallowed, "법§15·§17", "기타"),
+        ("손금불산입", "고유목적사업준비금 한도초과", r.proper_purpose_reserve_excess, "법§29", "유보"),
         ("익금산입",   "간주임대료",               r.deemed_rental,            "조특법§138", "기타사외유출"),
         ("익금산입",   "전기 △유보 추인",          r.prior_reserve_reversal_add, "법§34③ 등", "유보"),
     ]
@@ -145,6 +149,9 @@ def adjustment_rows(
         ("익금불산입", "자산수증익·채무면제익 (이월결손금 보전)", r.debt_relief_offset, "법§18 6호", "기타"),
         ("익금불산입", "국세환급금 이자",          r.refund_interest_excluded, "법§18 4호", "기타"),
         ("익금불산입", "부가가치세 매출세액",       r.vat_output_excluded,      "법§18 5호", "기타"),
+        ("익금불산입", "작업진행률 수익인식",       r.construction_revenue_excluded, "영§69", "△유보"),
+        ("익금불산입", "자기주식처분이익",          r.treasury_stock_gain_excluded, "법§17", "기타"),
+        ("손금산입",   "고유목적사업준비금",        r.proper_purpose_reserve_deduction, "법§29", "△유보"),
     ]
 
     # 회계사 직접 입력 세무조정 — 카테고리에 따라 가산/차감 행으로 분배

@@ -30,6 +30,8 @@ from src.rules.consulting import build_consulting_topics
 from src.rules.coverage import run_coverage_check
 from src.rules.other_adjustments import (
     calc_penalty, calc_officer_bonus_excess, calc_officer_retirement_excess,
+    calc_stock_based_compensation_excess, calc_construction_progress_adjustment,
+    calc_treasury_stock_disposal, calc_proper_purpose_reserve,
 )
 from src.rules.vehicle import calc_vehicle
 from src.rules.tax_base import compute_all, eligible_carryforward_total, calc_land_transfer_tax
@@ -710,6 +712,72 @@ def render(proj) -> None:
                                        else "실손해액 불분명 → 지급액 × 2/3 손금불산입 (영§23②)"),
                             disposition="기타사외유출")
 
+                # 추가 자동계산 항목 — 분개 파싱만으로 확정 불가한 법정 판단값은 3단계 입력 사용
+                result.stock_compensation_excess = calc_stock_based_compensation_excess(
+                    booked_expense=mi.stock_comp_booked_expense,
+                    deductible_amount=mi.stock_comp_deductible_amount,
+                )
+                _add_detail(
+                    "주식매수선택권·주식기준보상 비용", result.stock_compensation_excess,
+                    "조특법§13의2, 조특령§19",
+                    [f"장부 비용 {mi.stock_comp_booked_expense:,}원 − 법정 손금산입 인정액 "
+                     f"{mi.stock_comp_deductible_amount:,}원 = 손금불산입 {result.stock_compensation_excess:,}원",
+                     "대상 법인·임직원·부여요건·행사요건 충족 여부는 3단계 입력값의 전제"],
+                    reason="3단계에서 장부 비용계상액과 조특법상 손금산입 인정액을 입력 → 초과 비용 손금불산입",
+                    book=mi.stock_comp_booked_expense, tax=mi.stock_comp_deductible_amount,
+                    tax_basis="조특법§13의2 요건 충족액만 손금 인정",
+                    disposition="기타사외유출",
+                )
+
+                _progress_diff = calc_construction_progress_adjustment(
+                    tax_revenue=mi.construction_tax_revenue,
+                    book_revenue=mi.construction_book_revenue,
+                )
+                result.construction_revenue_add = max(0, _progress_diff)
+                result.construction_revenue_excluded = max(0, -_progress_diff)
+                _add_detail(
+                    "작업진행률 수익인식", abs(_progress_diff), "영§69",
+                    [f"세무상 작업진행률 수익 {mi.construction_tax_revenue:,}원 − 장부 수익 "
+                     f"{mi.construction_book_revenue:,}원 = {_progress_diff:+,}원",
+                     "양수는 익금산입, 음수는 익금불산입으로 반영"],
+                    reason="3단계에서 세무상 진행률 수익과 장부 수익을 입력 → 차액을 귀속시기 조정",
+                    book=mi.construction_book_revenue, tax=mi.construction_tax_revenue,
+                    tax_basis="작업진행률 기준 수익 귀속 (영§69)",
+                    disposition="유보/△유보",
+                )
+
+                _ts_gain, _ts_loss = calc_treasury_stock_disposal(
+                    booked_gain=mi.treasury_stock_disposal_gain,
+                    booked_loss=mi.treasury_stock_disposal_loss,
+                )
+                result.treasury_stock_gain_excluded = _ts_gain
+                result.treasury_stock_loss_disallowed = _ts_loss
+                _add_detail(
+                    "자기주식처분손익", _ts_gain + _ts_loss, "법§15, §17",
+                    [f"손익계상 처분이익 {_ts_gain:,}원 → 익금불산입",
+                     f"손익계상 처분손실 {_ts_loss:,}원 → 손금불산입"],
+                    reason="3단계에서 자기주식 처분손익 계상액을 입력 → 자본거래 성격의 손익을 세무조정",
+                    tax_basis="자기주식 처분손익은 자본거래 조정",
+                    disposition="기타",
+                )
+
+                _pp_deduct, _pp_excess = calc_proper_purpose_reserve(
+                    booked_reserve=mi.proper_purpose_reserve_booked,
+                    deductible_limit=mi.proper_purpose_reserve_limit,
+                )
+                result.proper_purpose_reserve_deduction = _pp_deduct
+                result.proper_purpose_reserve_excess = _pp_excess
+                _add_detail(
+                    "고유목적사업준비금", _pp_deduct + _pp_excess, "법§29",
+                    [f"설정액 {mi.proper_purpose_reserve_booked:,}원, 법정 한도 "
+                     f"{mi.proper_purpose_reserve_limit:,}원",
+                     f"손금산입 {_pp_deduct:,}원 · 한도초과 손금불산입 {_pp_excess:,}원"],
+                    reason="3단계에서 비영리법인 고유목적사업준비금 설정액과 법정 한도 입력",
+                    book=mi.proper_purpose_reserve_booked, tax=_pp_deduct,
+                    tax_basis="법§29 한도 내 손금산입",
+                    disposition="△유보/유보",
+                )
+
                 # 임원 상여 한도초과 (법§26, 영§43②) — 건별 질문형(임원 게이트·지급기준 초과)
                 from src.ui.review_specs import officer_bonus_spec
                 _bonus_results = build_results(
@@ -1058,7 +1126,15 @@ def render(proj) -> None:
                 if result.deemed_interest > 0:
                     _auto_items.add("가지급금 인정이자")
                 if result.unfair_transaction > 0:
-                    _auto_items.add("부당행위계산 부인 검토")
+                    _auto_items.add("부당행위계산 부인")
+                if mi.stock_comp_booked_expense or mi.stock_comp_deductible_amount:
+                    _auto_items.add("주식매수선택권·주식기준보상 비용")
+                if mi.construction_book_revenue or mi.construction_tax_revenue:
+                    _auto_items.add("작업진행률 수익인식")
+                if mi.treasury_stock_disposal_gain or mi.treasury_stock_disposal_loss:
+                    _auto_items.add("자기주식처분손익")
+                if mi.proper_purpose_reserve_booked or mi.proper_purpose_reserve_limit:
+                    _auto_items.add("고유목적사업준비금")
                 if mi.rental_deposit > 0:
                     _auto_items.add("간주임대료")
                 if div_income > 0:

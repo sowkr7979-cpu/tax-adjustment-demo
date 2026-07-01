@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from src.ui.review_questions import Question, DispositionRule, ReviewItemSpec
+from src.rules.other_adjustments import calc_unfair_transaction_general
 
 
 # ── 부당행위계산 부인 (법§52, 영§88③, 영§89) ─────────────────────────────────
@@ -20,7 +21,10 @@ def _unfair_diff(a: dict) -> int:
     """부인액 = |시가 − 거래가액| (이전된 이익). 무상이전은 거래가액 0."""
     if a.get("type") in ("해당없음", None):
         return 0
-    return abs(int(a.get("market", 0) or 0) - int(a.get("deal", 0) or 0))
+    return calc_unfair_transaction_general(
+        market_value=int(a.get("market", 0) or 0),
+        transaction_value=int(a.get("deal", 0) or 0),
+    )
 
 
 def _unfair_gate(a: dict) -> bool:

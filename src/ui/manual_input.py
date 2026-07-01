@@ -1737,6 +1737,65 @@ def render_adjustment_data(
                 "환급 신청 여부·금액은 회계사·납세자가 확정합니다. 환급가능세액 초안은 5단계에서 산출됩니다."
             )
 
+    with st.expander("추가 자동계산 항목 — 주식보상·진행률·자기주식·고유목적사업준비금"):
+        st.caption(
+            "법령 요건과 금액 산정에 필요한 기초자료를 회계사가 확정 입력하면 5단계에서 "
+            "소득금액조정합계표(별지15호)에 자동 반영합니다."
+        )
+        st.markdown("**주식매수선택권·주식기준보상 비용 (조특법§13의2, 조특령§19)**")
+        sc1, sc2 = st.columns(2)
+        mi.stock_comp_booked_expense = int(sc1.number_input(
+            "장부 비용계상액 (원)", min_value=0,
+            value=int(mi.stock_comp_booked_expense or 0), step=1_000_000,
+            key="stock_comp_booked_expense",
+        ))
+        mi.stock_comp_deductible_amount = int(sc2.number_input(
+            "법정 손금산입 인정액 (원)", min_value=0,
+            value=int(mi.stock_comp_deductible_amount or 0), step=1_000_000,
+            key="stock_comp_deductible_amount",
+            help="대상 법인·임직원·부여요건·행사요건 충족액만 입력하세요.",
+        ))
+
+        st.markdown("**작업진행률 수익인식 (영§69)**")
+        cr1, cr2 = st.columns(2)
+        mi.construction_book_revenue = int(cr1.number_input(
+            "장부 수익계상액 (원)", min_value=0,
+            value=int(mi.construction_book_revenue or 0), step=10_000_000,
+            key="construction_book_revenue",
+        ))
+        mi.construction_tax_revenue = int(cr2.number_input(
+            "세무상 작업진행률 수익 (원)", min_value=0,
+            value=int(mi.construction_tax_revenue or 0), step=10_000_000,
+            key="construction_tax_revenue",
+        ))
+
+        st.markdown("**자기주식처분손익 (법§15·§17)**")
+        ts1, ts2 = st.columns(2)
+        mi.treasury_stock_disposal_gain = int(ts1.number_input(
+            "손익계상한 자기주식처분이익 (원)", min_value=0,
+            value=int(mi.treasury_stock_disposal_gain or 0), step=1_000_000,
+            key="treasury_stock_disposal_gain",
+        ))
+        mi.treasury_stock_disposal_loss = int(ts2.number_input(
+            "손익계상한 자기주식처분손실 (원)", min_value=0,
+            value=int(mi.treasury_stock_disposal_loss or 0), step=1_000_000,
+            key="treasury_stock_disposal_loss",
+        ))
+
+        st.markdown("**고유목적사업준비금 (법§29, 비영리법인)**")
+        pp1, pp2 = st.columns(2)
+        mi.proper_purpose_reserve_booked = int(pp1.number_input(
+            "준비금 설정액/손비계상액 (원)", min_value=0,
+            value=int(mi.proper_purpose_reserve_booked or 0), step=1_000_000,
+            key="proper_purpose_reserve_booked",
+        ))
+        mi.proper_purpose_reserve_limit = int(pp2.number_input(
+            "법정 손금산입 한도액 (원)", min_value=0,
+            value=int(mi.proper_purpose_reserve_limit or 0), step=1_000_000,
+            key="proper_purpose_reserve_limit",
+            help="비영리법인의 수익사업 소득 구성별 한도 계산 후 입력하세요.",
+        ))
+
     with st.expander("➕ 세무조정 직접 입력 (규칙엔진 미포착 항목 수동 가감)"):
         st.caption(
             "규칙엔진이 자동 계산하지 못한 세무조정을 회계사가 직접 추가합니다. "
