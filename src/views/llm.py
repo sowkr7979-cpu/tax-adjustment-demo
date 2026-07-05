@@ -8,7 +8,7 @@ import streamlit as st
 
 from src.parsers.smart_a import SmartALoader
 from src.rules.classifier import classify_all
-from src.llm.anthropic_client import AnthropicClient
+from src.llm.ollama_client import OllamaClient
 from src.llm.analyzer import JournalAnalyzer
 from src.ui.styles import page_header, section_title, info_card, striped_by_group
 from src.utils.models import issue_label
@@ -142,14 +142,14 @@ def render(proj, llm_ok: bool) -> None:
 
     st.markdown(section_title(
         "2단계 — 선택 거래 메모 보조",
-        "Claude API로 회계사가 고른 소수 검토 큐만 요약·메모화합니다 (배포 데모 — 더미 데이터 전용).",
+        "로컬 LLM(Ollama)으로 회계사가 고른 소수 검토 큐만 요약·메모화합니다 (고객자료 외부 미전송).",
     ), unsafe_allow_html=True)
 
     if not llm_ok:
         st.markdown(info_card(
             "<b style='color:#0d0d0d;'>AI 검토보조는 선택 기능입니다</b> &nbsp; "
-            "이 라이브 데모에서는 비활성 상태이며, 세무조정 계산(5단계)은 규칙엔진만으로 완결됩니다. "
-            "활성화하려면 <code>ANTHROPIC_API_KEY</code>를 Secrets/환경변수에 넣으세요. "
+            "현재 로컬 Ollama가 실행 중이 아니어서 비활성 상태이며, 세무조정 계산(5단계)은 규칙엔진만으로 완결됩니다. "
+            "활성화하려면 Ollama를 실행하고 모델을 준비하세요 (<code>ollama pull gemma4</code>). "
             "설계상 AI는 금액을 확정하지 않고 검토메모·요약만 보조합니다(ADR-002)."
         ), unsafe_allow_html=True)
 
@@ -175,15 +175,15 @@ def render(proj, llm_ok: bool) -> None:
         )
         _selected_issues = set(_picked)
         _sel_cnt = sum(_stage2_by_issue[c] for c in _picked)
-        _est_sec = max(_sel_cnt * 3, 3)  # Claude API 배치 추론 실측 약 3초/건 이내
-        _too_many = _sel_cnt > 30  # 공개 데모 API 비용 보호
+        _est_sec = max(_sel_cnt * 60, 10)  # CPU 추론 실측 분개 1건당 약 1분 (gemma4, 12 tok/s)
+        _too_many = _sel_cnt > 30  # 로컬 CPU 추론 시간 보호
         st.caption(
             f"선택된 분석 대상 **{_sel_cnt:,}건** · 예상 소요 약 {_est_sec // 60}분 {_est_sec % 60}초 "
-            f"(Claude API 기준, 데모 권장 30건 이하)"
+            f"(로컬 LLM 기준, 권장 30건 이하)"
         )
         if _too_many:
             st.warning(
-                "선택 대상이 30건을 초과합니다. 공개 데모는 API 비용 보호를 위해 "
+                "선택 대상이 30건을 초과합니다. 로컬 CPU 추론은 1건당 약 1분이 걸리므로 "
                 "금액 상위 거래나 특정 이슈만 좁혀서 실행하세요."
             )
     else:
@@ -204,7 +204,7 @@ def render(proj, llm_ok: bool) -> None:
     if run_llm:
         fy_end_val = _parse_stored_date(proj.company.fiscal_year_end, date.today())
         analyzer = JournalAnalyzer(
-            client=AnthropicClient(),
+            client=OllamaClient(),
             fiscal_year_end=fy_end_val,
             company_name=proj.company.name,
             is_sme=proj.company.is_sme,

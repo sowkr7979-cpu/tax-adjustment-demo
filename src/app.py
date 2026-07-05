@@ -12,7 +12,7 @@ load_dotenv()
 
 from src.parsers.smart_a import SmartALoader
 from src.project.taxproj import TaxProject
-from src.llm.anthropic_client import AnthropicClient
+from src.llm.ollama_client import OllamaClient
 from src.ui.styles import GOOGLE_CSS
 from src.views import basic_info, upload, manual, llm, calc, output
 
@@ -98,12 +98,12 @@ with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True)
 
     proj = st.session_state.project
-    llm_client = AnthropicClient()
+    llm_client = OllamaClient()
     llm_ok = llm_client.is_available()
-    # 키가 없으면 '오류'가 아니라 '선택 기능 비활성'으로 중립 표시 (데모에서 정상 상태)
+    # Ollama 미기동이면 '오류'가 아니라 '선택 기능 비활성'으로 중립 표시
     llm_color = "#10a37f" if llm_ok else "#8e8ea0"
     llm_bg = "#ecfdf5" if llm_ok else "#f7f7f8"
-    _title = "Claude API 연결됨" if llm_ok else "AI 검토보조 · 선택 기능"
+    _title = "로컬 LLM(Ollama) 연결됨" if llm_ok else "AI 검토보조 · 선택 기능"
     _sub = llm_client.model if llm_ok else "미연결 — 규칙엔진 계산은 정상 동작"
 
     st.markdown(f"""
