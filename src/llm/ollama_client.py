@@ -56,8 +56,13 @@ class OllamaClient:
         return parsed
 
     def is_available(self) -> bool:
+        """서버 응답 + 설정 모델 설치 여부까지 확인 (서버만 켜진 상태의 실행기 실패 방지)."""
         try:
             resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                return False
+            models = [m.get("name", "") for m in resp.json().get("models", [])]
+            base = self.model.split(":")[0]
+            return any(n == self.model or n.split(":")[0] == base for n in models)
         except Exception:
             return False

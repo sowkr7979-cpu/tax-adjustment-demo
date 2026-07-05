@@ -34,4 +34,4 @@ git branch --set-upstream-to="origin/${BRANCH}" "$BRANCH" 2>/dev/null || true
 
 echo "✅ 푸시 완료 → https://github.com/${USER}/${REPO} (브랜치 ${BRANCH})"
 echo "다음: https://share.streamlit.io → Create app → 이 저장소·브랜치 → Main file: streamlit_app.py"
-echo "      → Advanced → Secrets 에 ANTHROPIC_API_KEY 붙여넣기 → Deploy"
+echo "      → Deploy (AI 검토보조는 로컬 Ollama 전용 — 클라우드 데모에선 비활성 표시가 정상)"
